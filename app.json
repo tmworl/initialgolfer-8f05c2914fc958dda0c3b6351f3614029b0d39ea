@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "GolfScoreTracker",
+    "slug": "golfscoretracker",
+    "scheme": "mygolfapp",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "sdkVersion": "52.0.0",
+    "extra": {
+      "eas": {
+        "projectId": "f533582e-60df-40c6-94a0-cb0d233655f5"
+      }
+    },
+    "owner": "daybeam",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/f533582e-60df-40c6-94a0-cb0d233655f5"
+    },
+    "icon": "./assets/icon.png",
+    "android": {
+      "package": "com.daybeam.golfimprove",
+      "icon": "./assets/android/icon.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/android/adaptive-icon.png",
+        "backgroundColor": "#FFFFFF"
+      }
+    },
+    "ios": {
+      "bundleIdentifier": "com.daybeam.golfimprove",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocationWhenInUseUsageDescription": "This app uses your location to calculate distances to the green and other golf course features.",
+        "NSLocationAlwaysUsageDescription": "This app uses your location to calculate distances while you play golf."
+      },
+      "icon": "./assets/ios/icon.png"
+    }
+  }
+}
