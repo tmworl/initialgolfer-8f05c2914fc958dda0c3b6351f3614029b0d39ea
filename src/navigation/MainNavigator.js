@@ -2,23 +2,17 @@
 
 import React from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
+import { createStackNavigator } from "@react-navigation/stack";
 import { Ionicons } from '@expo/vector-icons';
+
+// Import stack and screen components
 import HomeStack from "./HomeStack";
-import RoundsStack from "./RoundsStack";
+import RoundsScreen from "../screens/RoundScreen";
+import ScorecardScreen from "../screens/ScorecardScreen";
 import InsightsScreen from "../screens/InsightsScreen";
 import ProfileScreen from "../screens/ProfileScreen";
 
-// Import our navigation styling system
-import navigationTheme from "../ui/navigation/theme";
-import { getTabBarConfig, getTabNavigatorScreenOptions } from "../ui/navigation/configs/tabBar";
-import { 
-  createStackNavigatorScreenOptions,
-  createRoundsStackConfig, 
-  createInsightsStackConfig, 
-  createProfileStackConfig 
-} from "../ui/navigation/configs/stack";
-
-// Create stack navigators for each tab that needs nested navigation
+// Create stack navigators for each tab section
 const RoundsStack = createStackNavigator();
 const InsightsStack = createStackNavigator();
 const ProfileStack = createStackNavigator();
@@ -30,20 +24,17 @@ const ProfileStack = createStackNavigator();
  * This allows navigation from the rounds list to the scorecard view
  */
 function RoundsStackScreen() {
-  // Get configuration for the rounds stack
-  const config = createRoundsStackConfig();
-  
   return (
-    <RoundsStack.Navigator screenOptions={config.screenOptions}>
+    <RoundsStack.Navigator>
       <RoundsStack.Screen 
         name="RoundsScreen" 
         component={RoundsScreen} 
-        options={config.screenConfigs.RoundsScreen.options}
+        options={{ title: "Your Rounds" }}
       />
       <RoundsStack.Screen 
         name="ScorecardScreen" 
         component={ScorecardScreen} 
-        options={config.screenConfigs.ScorecardScreen.options}
+        options={{ title: "Scorecard" }}
       />
     </RoundsStack.Navigator>
   );
@@ -55,15 +46,12 @@ function RoundsStackScreen() {
  * Creates a stack navigator for the Insights tab with consistent headers
  */
 function InsightsStackScreen() {
-  // Get configuration for the insights stack
-  const config = createInsightsStackConfig();
-  
   return (
-    <InsightsStack.Navigator screenOptions={config.screenOptions}>
+    <InsightsStack.Navigator>
       <InsightsStack.Screen 
         name="InsightsScreen" 
         component={InsightsScreen}
-        options={config.screenConfigs.InsightsScreen.options}
+        options={{ title: "Insights" }}
       />
     </InsightsStack.Navigator>
   );
@@ -75,15 +63,12 @@ function InsightsStackScreen() {
  * Creates a stack navigator for the Profile tab with consistent headers
  */
 function ProfileStackScreen() {
-  // Get configuration for the profile stack
-  const config = createProfileStackConfig();
-  
   return (
-    <ProfileStack.Navigator screenOptions={config.screenOptions}>
+    <ProfileStack.Navigator>
       <ProfileStack.Screen 
         name="ProfileScreen" 
         component={ProfileScreen}
-        options={config.screenConfigs.ProfileScreen.options}
+        options={{ title: "Your Profile" }}
       />
     </ProfileStack.Navigator>
   );
@@ -128,9 +113,9 @@ export default function MainNavigator() {
       })}
     >
       <Tab.Screen name="Home" component={HomeStack} />
-      <Tab.Screen name="Rounds" component={RoundsStack} />
-      <Tab.Screen name="Insights" component={InsightsScreen} />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen name="Rounds" component={RoundsStackScreen} />
+      <Tab.Screen name="Insights" component={InsightsStackScreen} />
+      <Tab.Screen name="Profile" component={ProfileStackScreen} />
     </Tab.Navigator>
   );
 }
