@@ -131,6 +131,12 @@ serve(async (req) => {
       // Determine if we need to refresh from API
       needsApiRefresh = forceRefresh || !hasPoiData || dataStale;
     }
+
+    // After effectiveApiCourseId is defined, add validation
+    if (!effectiveApiCourseId) {
+      console.error("Missing API course identifier, cannot fetch detail data");
+      throw new Error("Course API identifier is required for detail information");
+    }
     
     // If we need API data and have the API key + course ID
     if (needsApiRefresh && GOLF_API_KEY && effectiveApiCourseId) {
@@ -152,15 +158,31 @@ serve(async (req) => {
           // Parse API response
           const apiData = await apiResponse.json();
           
-          // Log structured data about the response for diagnostic purposes
+          // Add resilience layer for API response validation
+          if (apiData) {
+            // Log key diagnostic information about API response
+            console.log("API response structure:", {
+              hasCourseName: !!apiData.courseName,
+              courseNameLength: (apiData.courseName || "").length,
+              clubName: apiData.clubName,
+              courseID: apiData.courseID
+            });
+            
+            // Normalize empty course name in API response
+            if (!apiData.courseName || apiData.courseName === "") {
+              console.log(`API returned empty course name for ID: ${effectiveApiCourseId}, using club name: ${apiData.clubName}`);
+              apiData.courseName = apiData.clubName;
+            }
+          }
+
+          // Log structured data about the response
           console.log("API response received for course coordinates", {
             responseKeys: Object.keys(apiData),
             hasCoordinates: !!apiData.coordinates,
             coordinatesCount: (apiData.coordinates || []).length
           });
           
-          // Modified logic to handle API response structure
-          // Check for coordinates data at root level (the actual API structure)
+          // Process coordinates data at root level
           if (apiData && Array.isArray(apiData.coordinates)) {
             console.log(`Received ${apiData.coordinates.length} coordinate points from API`);
             
@@ -201,7 +223,7 @@ serve(async (req) => {
                 lng: parseFloat(coord.longitude)
               };
               
-              // Map the POI values to feature types using the corrected mapping
+              // Map the POI values to feature types
               switch(coord.poi) {
                 case 1: // Green
                   // Determine location (front, middle, back)
@@ -411,7 +433,6 @@ serve(async (req) => {
     }
     
     // Prepare response data
-    // Filter out empty POI arrays for cleaner response
     let responseData = {
       ...existingCourse,
       has_poi_data: false,
