@@ -19,7 +19,6 @@ import {
   TouchableOpacity, 
   ActivityIndicator, 
   StyleSheet,
-  SafeAreaView,
   TextInput,
   Alert
 } from "react-native";
@@ -342,127 +341,118 @@ export default function CourseSelectorScreen({ navigation }) {
   
   return (
     <Layout>
-      <SafeAreaView style={styles.container}>
-        {/* Title */}
-        <View style={styles.titleContainer}>
-          <Typography variant="title" style={styles.title}>
-            Select a Course
+      {/* Search input */}
+      <View style={styles.searchContainer}>
+        <Ionicons 
+          name="search" 
+          size={20} 
+          color="#666" 
+          style={styles.searchIcon}
+        />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search for a course..."
+          value={searchQuery}
+          onChangeText={handleSearchChange}
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={handleClearSearch} style={styles.clearButton}>
+            <Ionicons name="close-circle" size={18} color="#999" />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Rest of the existing content */}
+      {!searchQuery.trim() && recentCourses.length > 0 && (
+        <View style={styles.sectionHeader}>
+          <Typography variant="subtitle" style={styles.sectionTitle}>
+            Recently Played
           </Typography>
         </View>
-        
-        {/* Search input */}
-        <View style={styles.searchContainer}>
-          <Ionicons 
-            name="search" 
-            size={20} 
-            color="#666" 
-            style={styles.searchIcon}
-          />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search for a course..."
-            value={searchQuery}
-            onChangeText={handleSearchChange}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          {searchQuery.length > 0 && (
-            <TouchableOpacity onPress={handleClearSearch} style={styles.clearButton}>
-              <Ionicons name="close-circle" size={18} color="#999" />
-            </TouchableOpacity>
-          )}
-        </View>
-        
-        {/* Course List Section Header */}
-        {!searchQuery.trim() && recentCourses.length > 0 && (
-          <View style={styles.sectionHeader}>
-            <Typography variant="subtitle" style={styles.sectionTitle}>
-              Recently Played
-            </Typography>
-          </View>
-        )}
-        
-        {/* Course List */}
-        <View style={styles.courseListContainer}>
-          {isLoading ? (
-            /* Show loading indicators based on context */
-            showSkeletons ? (
-              // Show skeleton loaders while searching
-              <View style={styles.skeletonContainer}>
-                {[1, 2, 3, 4, 5].map(i => (
-                  <SkeletonCourseCard key={`skeleton-${i}`} />
-                ))}
-              </View>
-            ) : (
-              <ActivityIndicator size="large" color={theme.colors.primary} />
-            )
-          ) : displayCourses.length > 0 ? (
-            <FlatList
-              data={displayCourses}
-              renderItem={renderCourseItem}
-              keyExtractor={item => item.id}
-              contentContainerStyle={styles.courseList}
-            />
-          ) : searchQuery.trim().length >= 3 ? (
-            <Typography variant="body" style={styles.noCoursesText}>
-              No courses found for "{searchQuery}". Try a different search term.
-            </Typography>
+      )}
+      
+      {/* Course List */}
+      <View style={styles.courseListContainer}>
+        {isLoading ? (
+          /* Show loading indicators based on context */
+          showSkeletons ? (
+            // Show skeleton loaders while searching
+            <View style={styles.skeletonContainer}>
+              {[1, 2, 3, 4, 5].map(i => (
+                <SkeletonCourseCard key={`skeleton-${i}`} />
+              ))}
+            </View>
           ) : (
-            <Typography variant="body" style={styles.noCoursesText}>
-              {showRecent ? 
-                "No recently played courses found." :
-                "No courses available."
-              }
-            </Typography>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+          )
+        ) : displayCourses.length > 0 ? (
+          <FlatList
+            data={displayCourses}
+            renderItem={renderCourseItem}
+            keyExtractor={item => item.id}
+            contentContainerStyle={styles.courseList}
+          />
+        ) : searchQuery.trim().length >= 3 ? (
+          <Typography variant="body" style={styles.noCoursesText}>
+            No courses found for "{searchQuery}". Try a different search term.
+          </Typography>
+        ) : (
+          <Typography variant="body" style={styles.noCoursesText}>
+            {showRecent ? 
+              "No recently played courses found." :
+              "No courses available."
+            }
+          </Typography>
+        )}
+      </View>
+      
+      {/* Tee Selection with Loading Indicator */}
+      {selectedCourse && (
+        <View style={styles.teeSelectionContainer}>
+          <Typography variant="subtitle" style={styles.teeSelectionTitle}>
+            Select Tee
+          </Typography>
+          
+          {isLoadingCourseDetails ? (
+            <View style={styles.teeLoadingContainer}>
+              <ActivityIndicator size="small" color={theme.colors.primary} />
+              <Typography variant="body" style={styles.loadingText}>
+                Loading tee options...
+              </Typography>
+            </View>
+          ) : (
+            <View style={styles.teesList}>
+              {selectedCourse.tees && selectedCourse.tees.length > 0 ? (
+                selectedCourse.tees.map(tee => renderTeeOption(tee))
+              ) : (
+                <Typography variant="body" style={styles.noTeesText}>
+                  No tee information available for this course
+                </Typography>
+              )}
+            </View>
           )}
         </View>
-        
-        {/* Tee Selection with Loading Indicator */}
-        {selectedCourse && (
-          <View style={styles.teeSelectionContainer}>
-            <Typography variant="subtitle" style={styles.teeSelectionTitle}>
-              Select Tee
-            </Typography>
-            
-            {isLoadingCourseDetails ? (
-              <View style={styles.teeLoadingContainer}>
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-                <Typography variant="body" style={styles.loadingText}>
-                  Loading tee options...
-                </Typography>
-              </View>
-            ) : (
-              <View style={styles.teesList}>
-                {selectedCourse.tees && selectedCourse.tees.length > 0 ? (
-                  selectedCourse.tees.map(tee => renderTeeOption(tee))
-                ) : (
-                  <Typography variant="body" style={styles.noTeesText}>
-                    No tee information available for this course
-                  </Typography>
-                )}
-              </View>
-            )}
-          </View>
-        )}
-        
-        {/* Start Round Button */}
-        <TouchableOpacity
-          style={[
-            styles.startButton,
-            (!selectedCourse || !selectedTeeId || isLoadingCourseDetails) && styles.disabledButton
-          ]}
-          onPress={handleStartRound}
-          disabled={!selectedCourse || !selectedTeeId || isLoadingCourseDetails}
+      )}
+      
+      {/* Start Round Button */}
+      <TouchableOpacity
+        style={[
+          styles.startButton,
+          (!selectedCourse || !selectedTeeId || isLoadingCourseDetails) && styles.disabledButton
+        ]}
+        onPress={handleStartRound}
+        disabled={!selectedCourse || !selectedTeeId || isLoadingCourseDetails}
+      >
+        <Typography 
+          variant="button" 
+          color="#FFFFFF" 
+          weight="bold"
         >
-          <Typography 
-            variant="button" 
-            color="#FFFFFF" 
-            weight="bold"
-          >
-            Start Round
-          </Typography>
-        </TouchableOpacity>
-      </SafeAreaView>
+          Start Round
+        </Typography>
+      </TouchableOpacity>
     </Layout>
   );
 }
@@ -481,13 +471,6 @@ function debounce(func, wait) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  titleContainer: {
-    marginBottom: 16,
-    alignItems: 'center',
-  },
-  title: {
-    marginBottom: 8,
   },
   searchContainer: {
     flexDirection: 'row',
