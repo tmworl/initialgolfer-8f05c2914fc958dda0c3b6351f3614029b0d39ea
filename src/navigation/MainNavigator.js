@@ -1,6 +1,5 @@
 // src/navigation/MainNavigator.js
-
-import React from "react";
+import React, { useEffect, useContext } from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createStackNavigator } from "@react-navigation/stack";
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +10,10 @@ import RoundsScreen from "../screens/RoundScreen";
 import ScorecardScreen from "../screens/ScorecardScreen";
 import InsightsScreen from "../screens/InsightsScreen";
 import ProfileScreen from "../screens/ProfileScreen";
+
+// Import authentication context and analytics service
+import { AuthContext } from "../context/AuthContext";
+import analyticsService from "../services/analyticsService";
 
 // Create stack navigators for each tab section
 const RoundsStack = createStackNavigator();
@@ -84,16 +87,31 @@ const Tab = createBottomTabNavigator();
  * - Rounds: For viewing completed rounds and scorecards
  * - Insights: For viewing AI-powered game analysis and improvement tips
  * - Profile: For user account settings
+ * 
+ * Analytics initialization occurs here after successful authentication
  */
 export default function MainNavigator() {
+  // Get the authenticated user from context
+  const { user } = useContext(AuthContext);
+  
+  // Initialize analytics after authentication
+  useEffect(() => {
+    if (user) {
+      console.log('MainNavigator: Initializing analytics for authenticated user');
+      analyticsService.initAnalytics();
+      
+      // Clean up analytics on component unmount or user change
+      return () => {
+        console.log('MainNavigator: Cleaning up analytics');
+        analyticsService.resetAnalytics();
+      };
+    }
+  }, [user]);
+  
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        // Hide tab bar for nested screens
-        tabBarStyle: ({ navigation }) => ({
-          display: navigation?.getState()?.index === 0 ? 'flex' : 'none'
-        }),
         tabBarIcon: ({ focused, color, size }) => {
           let iconName;
           
@@ -110,8 +128,11 @@ export default function MainNavigator() {
             case 'Profile':
               iconName = focused ? 'person' : 'person-outline';
               break;
+            default:
+              iconName = 'help-outline';
+              break;
           }
-          
+
           return <Ionicons name={iconName} size={size} color={color} />;
         },
       })}
