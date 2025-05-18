@@ -90,6 +90,10 @@ export default function MainNavigator() {
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
+        // Hide tab bar for nested screens
+        tabBarStyle: ({ navigation }) => ({
+          display: navigation?.getState()?.index === 0 ? 'flex' : 'none'
+        }),
         tabBarIcon: ({ focused, color, size }) => {
           let iconName;
           
@@ -107,7 +111,7 @@ export default function MainNavigator() {
               iconName = focused ? 'person' : 'person-outline';
               break;
           }
-
+          
           return <Ionicons name={iconName} size={size} color={color} />;
         },
       })}

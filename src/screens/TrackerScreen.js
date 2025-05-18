@@ -12,9 +12,10 @@ import {
   TouchableOpacity
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { useFocusEffect } from '@react-navigation/native';
 import Layout from "../ui/Layout";
 import theme from "../ui/theme";
-import { createRound, saveHoleData, completeRound } from "../services/roundservice";
+import { createRound, saveHoleData, completeRound, deleteAbandonedRound } from "../services/roundservice";
 import ShotTable from "../components/ShotTable";
 import HoleNavigator from "../components/HoleNavigator";
 import { AuthContext } from "../context/AuthContext";
@@ -28,6 +29,8 @@ import DistanceIndicator from '../components/DistanceIndicator';
  * This screen allows users to track shots during a round of golf.
  * Uses the new data structure for tracking and saving hole data.
  * Enhanced to include POI data for each hole when available.
+ * 
+ * Enhanced with proper iOS and Android exit handling that deletes abandoned rounds.
  */
 export default function TrackerScreen({ navigation }) {
   // Get the authenticated user from context
@@ -74,35 +77,83 @@ export default function TrackerScreen({ navigation }) {
   const [course, setCourse] = useState(null);                   // Current course data
   const [courseDetails, setCourseDetails] = useState(null);     // Detailed course data from database
 
-  // Add this effect to handle hardware back button on Android
+  // iOS Navigation Interception - Enhanced with delete logic
+  useFocusEffect(
+    useCallback(() => {
+      const unsubscribe = navigation.addListener('beforeRemove', (e) => {
+        if (round && round.id) {
+          e.preventDefault();
+          
+          Alert.alert(
+            "Exit Round?",
+            "Are you sure you want to exit this round? Your progress will not be saved.",
+            [
+              { text: "Stay", style: "cancel" },
+              { 
+                text: "Exit", 
+                style: "destructive",
+                onPress: async () => {
+                  try {
+                    setLoading(true);
+                    await deleteAbandonedRound(round.id);
+                    await AsyncStorage.removeItem(`round_${round.id}_holes`);
+                    await AsyncStorage.removeItem("currentRound");
+                    navigation.dispatch(e.data.action);
+                  } catch (error) {
+                    console.error("Error abandoning round:", error);
+                    navigation.dispatch(e.data.action);
+                  } finally {
+                    setLoading(false);
+                  }
+                }
+              }
+            ]
+          );
+        }
+      });
+      return unsubscribe;
+    }, [navigation, round, setLoading])
+  );
+
+  // Android Hardware Back Button Handler - Enhanced with delete logic
   useEffect(() => {
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
       () => {
-        // Show confirmation dialog instead of going back immediately
-        Alert.alert(
-          "Exit Round?",
-          "Are you sure you want to exit this round? Your progress will be saved.",
-          [
-            { text: "Cancel", style: "cancel", onPress: () => {} },
-            { 
-              text: "Exit", 
-              style: "destructive",
-              onPress: () => {
-                // Save current progress and navigate back
-                saveCurrentHoleToStorage().then(() => {
-                  navigation.goBack();
-                });
+        if (round && round.id) {
+          Alert.alert(
+            "Exit Round?",
+            "Are you sure you want to exit this round? Your progress will not be saved.",
+            [
+              { text: "Stay", style: "cancel", onPress: () => {} },
+              { 
+                text: "Exit", 
+                style: "destructive",
+                onPress: async () => {
+                  try {
+                    setLoading(true);
+                    await deleteAbandonedRound(round.id);
+                    await AsyncStorage.removeItem(`round_${round.id}_holes`);
+                    await AsyncStorage.removeItem("currentRound");
+                    navigation.goBack();
+                  } catch (error) {
+                    console.error("Error abandoning round:", error);
+                    navigation.goBack();
+                  } finally {
+                    setLoading(false);
+                  }
+                }
               }
-            }
-          ]
-        );
-        return true; // Prevent default back behavior
+            ]
+          );
+          return true;
+        }
+        return false;
       }
     );
 
     return () => backHandler.remove();
-  }, []);
+  }, [round, navigation, setLoading]);
 
   /**
    * Save the current hole data to AsyncStorage

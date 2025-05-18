@@ -2,6 +2,18 @@
 
 import { supabase } from "./supabase";
 
+// Track events for analytics (assuming this exists in your app)
+// If you have a different analytics service, adjust accordingly
+const trackEvent = (eventName, eventData) => {
+  // This should be replaced with your actual analytics tracking implementation
+  console.log('Analytics Event:', eventName, eventData);
+};
+
+// Define event constants for analytics tracking
+const EVENTS = {
+  ROUND_ABANDONED: 'round_abandoned',
+};
+
 /**
  * Create a new round record in Supabase.
  * 
@@ -38,6 +50,63 @@ export const createRound = async (profile_id, course_id, tee_id, tee_name) => {
 
   console.log("[createRound] Round created successfully:", data[0]);
   return data[0]; // Return the newly created round record
+};
+
+/**
+ * Delete an abandoned (incomplete) round
+ * 
+ * This function deletes rounds that were started but not completed,
+ * typically called when a user exits the tracker screen without finishing.
+ * 
+ * @param {string} round_id - The ID of the round to delete
+ * @returns {Promise<boolean>} - Success flag
+ */
+export const deleteAbandonedRound = async (round_id) => {
+  const startTime = Date.now();
+  
+  try {
+    console.log("[deleteAbandonedRound] Attempting to delete round:", round_id);
+    
+    const { error } = await supabase
+      .from("rounds")
+      .delete()
+      .eq("id", round_id)
+      .eq("is_complete", false); // Only delete incomplete rounds for safety
+    
+    const duration = Date.now() - startTime;
+
+    if (error) {
+      console.error("[deleteAbandonedRound] Error deleting round:", error);
+      trackEvent(EVENTS.ROUND_ABANDONED, {
+        success: false,
+        error_code: error.code,
+        error_message: error.message,
+        round_id,
+        operation_duration_ms: duration
+      });
+      return false;
+    }
+    
+    console.log("[deleteAbandonedRound] Round deleted successfully:", round_id);
+    trackEvent(EVENTS.ROUND_ABANDONED, {
+      success: true,
+      round_id,
+      operation_duration_ms: duration
+    });
+    
+    return true;
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    console.error("[deleteAbandonedRound] Exception deleting round:", error);
+    trackEvent(EVENTS.ROUND_ABANDONED, {
+      success: false,
+      error_code: 'EXCEPTION',
+      error_message: error.message,
+      round_id,
+      operation_duration_ms: duration
+    });
+    return false;
+  }
 };
 
 /**

@@ -1,20 +1,24 @@
-// Modified version of src/components/InsightCard.js with text containment improvements
+// Modified version of src/components/InsightCard.js with Read More functionality
 
-import React from "react";
+import React, { useState, useContext } from "react";
 import { View, StyleSheet, TouchableOpacity } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import theme from "../ui/theme";
 import Typography from "../ui/components/Typography";
 import Card from "../ui/components/Card";
 import Button from "../ui/components/Button";
+import { AuthContext } from "../context/AuthContext";
+
+// Content preview length constant
+const CONTENT_PREVIEW_LENGTH = 150; // Maximum characters before truncation
 
 /**
  * InsightCard Component
  * 
  * A strategic monetization surface for delivering insights with configurable
  * conversion touchpoints and premium-exclusive features.
- * MODIFIED FOR TEXT CONTAINMENT: Ensures all text content remains inside card boundaries
- * while allowing flexible height expansion.
+ * ENHANCED WITH READ MORE FUNCTIONALITY: Automatically truncates long content
+ * and provides expansion toggle for better UX.
  */
 const InsightCard = ({
   title,
@@ -27,6 +31,36 @@ const InsightCard = ({
   loading = false,
   style,
 }) => {
+  // Get user context for analytics logging
+  const { user } = useContext(AuthContext);
+  
+  // State for controlling content expansion
+  const [expanded, setExpanded] = useState(false);
+  
+  // Determine if content should be truncated
+  const shouldTruncate = typeof content === 'string' && content && content.length > CONTENT_PREVIEW_LENGTH;
+  
+  // Calculate display content based on expansion state
+  const displayContent = !expanded && shouldTruncate
+    ? `${content.substring(0, CONTENT_PREVIEW_LENGTH)}...`
+    : content;
+  
+  // Handle read more/less toggle
+  const toggleExpanded = () => {
+    const newExpandedState = !expanded;
+    setExpanded(newExpandedState);
+    
+    // Console log when user expands content (reads more)
+    if (newExpandedState) {
+      console.log('[InsightCard] User expanded insight content:', {
+        insightTitle: title,
+        userId: user?.id || 'unknown',
+        contentLength: content?.length || 0,
+        timestamp: new Date().toISOString()
+      });
+    }
+  };
+  
   // Determine variant-specific styling for monetization optimization
   const variantStyle = getVariantStyle(variant);
   
@@ -85,16 +119,33 @@ const InsightCard = ({
         )}
       </View>
       
-      {/* Card content with flexible rendering - IMPROVED FOR CONTENT EXPANSION */}
+      {/* Card content with flexible rendering - ENHANCED WITH TRUNCATION */}
       <View style={styles.content}>
         {typeof content === 'string' ? (
-          <Typography 
-            variant="body"
-            style={styles.contentText}
-          >
-            {content}
-          </Typography>
+          <>
+            <Typography 
+              variant="body"
+              style={styles.contentText}
+            >
+              {displayContent}
+            </Typography>
+            
+            {/* Read More/Less Toggle */}
+            {shouldTruncate && (
+              <TouchableOpacity onPress={toggleExpanded} style={styles.readMoreButton}>
+                <Typography 
+                  variant="body" 
+                  weight="medium" 
+                  color={theme.colors.primary}
+                  style={styles.readMoreText}
+                >
+                  {expanded ? 'Read Less' : 'Read More'}
+                </Typography>
+              </TouchableOpacity>
+            )}
+          </>
         ) : (
+          // For non-string content (React components), render as-is
           content
         )}
       </View>
@@ -198,6 +249,14 @@ const styles = StyleSheet.create({
   contentText: {
     // Ensure text can wrap and expand vertically
     flexWrap: 'wrap',
+    lineHeight: 22, // Improved readability for longer content
+  },
+  readMoreButton: {
+    marginTop: theme.spacing.small,
+    alignSelf: 'flex-start', // Align to the left
+  },
+  readMoreText: {
+    fontSize: 14, // Slightly smaller than body text
   },
   ctaContainer: {
     marginTop: theme.spacing.medium,

@@ -137,8 +137,8 @@ const DistanceIndicator = ({
       // Configure location tracking options
       const options = {
         accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 2000, // Update every 2 seconds
-        distanceInterval: 5  // Or when moved 5 meters
+        timeInterval: 750, // Update every 2 seconds
+        distanceInterval: 1  // Or when moved 5 meters
       };
       
       // Start watching position
