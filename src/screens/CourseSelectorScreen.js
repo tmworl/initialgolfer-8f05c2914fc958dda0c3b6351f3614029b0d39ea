@@ -6,11 +6,8 @@
 // initial activation point for premium features, making consistent visual language
 // essential for establishing premium perception and driving upsell opportunities.
 //
-// Business Impact KPIs:
-// - Increase course selection completion rate by 12-15%
-// - Reduce selection abandonment by 18-20%
-// - Increase premium feature exploration by 25-30% through consistent premium UI language
-// - Accelerate mean time to first round completion by 5-7 minutes
+// ARCHITECTURAL ENHANCEMENT: Added zero-distance tee filtering to prevent
+// invalid data from propagating through the application pipeline.
 
 import React, { useState, useEffect, useCallback, useContext } from "react";
 import { 
@@ -37,6 +34,9 @@ import { AuthContext } from "../context/AuthContext";
  * This screen displays a list of available golf courses from the database
  * and allows the user to select one and a tee to play.
  * Shows recently played courses by default, with search functionality.
+ * 
+ * ENHANCED: Now includes validation to filter out tees with zero distances
+ * to prevent downstream crashes and invalid data propagation.
  */
 export default function CourseSelectorScreen({ navigation }) {
   // Get the current user from context
@@ -131,6 +131,32 @@ export default function CourseSelectorScreen({ navigation }) {
   }, [searchQuery, debouncedSearch]);
   
   /**
+   * Validate tee data to ensure distances are valid
+   * Filters out tees with zero or negative total distances
+   */
+  const validateTees = useCallback((tees) => {
+    if (!tees || !Array.isArray(tees)) {
+      return [];
+    }
+    
+    const validTees = tees.filter(tee => {
+      // Check for valid total_distance
+      const hasValidDistance = tee.total_distance && 
+                              typeof tee.total_distance === 'number' && 
+                              tee.total_distance > 0;
+      
+      if (!hasValidDistance) {
+        console.log(`Filtering out invalid tee: ${tee.name} (ID: ${tee.id}) - Distance: ${tee.total_distance}`);
+      }
+      
+      return hasValidDistance;
+    });
+    
+    console.log(`Tee validation: ${tees.length} total, ${validTees.length} valid`);
+    return validTees;
+  }, []);
+  
+  /**
    * Handle search query changes
    */
   const handleSearchChange = (text) => {
@@ -150,44 +176,88 @@ export default function CourseSelectorScreen({ navigation }) {
   
   /**
    * Handle selecting a course
-   * Enhanced to fetch detailed course data when tees are missing
+   * Enhanced to validate tee data and fetch detailed course data when tees are missing
    */
   const handleCourseSelect = async (course) => {
-    setSelectedCourse(course);
-    setSelectedTeeId(null); // Reset tee selection
-    
-    // If there's only one tee, select it automatically
-    if (course.tees && course.tees.length === 1) {
-      setSelectedTeeId(course.tees[0].id);
-    }
-    
-    // If course is from API search and lacks tees data, fetch complete details
-    if (!course.tees || !Array.isArray(course.tees) || course.tees.length === 0) {
-      try {
-        console.log("Course is missing tee data, fetching complete details");
-        setIsLoadingCourseDetails(true);
-        
-        // Get detailed course info with tees data
-        const detailedCourse = await getCourseById(course.id);
-        
-        if (detailedCourse && detailedCourse.tees && Array.isArray(detailedCourse.tees) && detailedCourse.tees.length > 0) {
-          console.log(`Found ${detailedCourse.tees.length} tees for this course`);
-          
-          // Update the selected course with complete data
-          setSelectedCourse(detailedCourse);
-          
-          // Auto-select first tee if only one is available
-          if (detailedCourse.tees.length === 1) {
-            setSelectedTeeId(detailedCourse.tees[0].id);
-          }
-        } else {
-          console.warn("Failed to retrieve tee data for course:", course.id);
-        }
-      } catch (error) {
-        console.error("Error fetching detailed course info:", error);
-      } finally {
-        setIsLoadingCourseDetails(false);
+    try {
+      // Validate existing tees before setting selected course
+      const validTees = validateTees(course.tees);
+      
+      // Update course object with only valid tees
+      const courseWithValidTees = {
+        ...course,
+        tees: validTees
+      };
+      
+      setSelectedCourse(courseWithValidTees);
+      setSelectedTeeId(null); // Reset tee selection
+      
+      // If there's only one valid tee, select it automatically
+      if (validTees.length === 1) {
+        setSelectedTeeId(validTees[0].id);
       }
+      
+      // If no valid tees exist, try to fetch complete details
+      if (validTees.length === 0 || !course.tees || !Array.isArray(course.tees) || course.tees.length === 0) {
+        try {
+          console.log("Course has no valid tees, fetching complete details");
+          setIsLoadingCourseDetails(true);
+          
+          // Get detailed course info with tees data
+          const detailedCourse = await getCourseById(course.id);
+          
+          if (detailedCourse && detailedCourse.tees && Array.isArray(detailedCourse.tees) && detailedCourse.tees.length > 0) {
+            console.log(`Found ${detailedCourse.tees.length} tees for this course`);
+            
+            // Validate the freshly fetched tees
+            const validDetailedTees = validateTees(detailedCourse.tees);
+            
+            // Update the selected course with complete data and only valid tees
+            const updatedCourseWithValidTees = {
+              ...detailedCourse,
+              tees: validDetailedTees
+            };
+            
+            setSelectedCourse(updatedCourseWithValidTees);
+            
+            // Auto-select first valid tee if only one is available
+            if (validDetailedTees.length === 1) {
+              setSelectedTeeId(validDetailedTees[0].id);
+            }
+            
+            if (validDetailedTees.length === 0) {
+              Alert.alert(
+                "No Valid Tees",
+                "This course has no tees with valid distance data. Please select a different course.",
+                [{ text: "OK" }]
+              );
+            }
+          } else {
+            console.warn("Failed to retrieve valid tee data for course:", course.id);
+            Alert.alert(
+              "Tee Data Unavailable",
+              "This course doesn't have complete tee information. Please select a different course.",
+              [{ text: "OK" }]
+            );
+          }
+        } catch (error) {
+          console.error("Error fetching detailed course info:", error);
+          Alert.alert(
+            "Error Loading Course",
+            "There was a problem loading the course details. Please try again.",
+            [{ text: "OK" }]
+          );
+        } finally {
+          setIsLoadingCourseDetails(false);
+        }
+      }
+    } catch (error) {
+      console.error("Error in handleCourseSelect:", error);
+      Alert.alert(
+        "Selection Error",
+        "There was a problem selecting this course. Please try again.",
+        [{ text: "OK" }]
+      );
     }
   };
   
@@ -201,7 +271,7 @@ export default function CourseSelectorScreen({ navigation }) {
   /**
    * Start a round with the selected course and tee
    * Enhanced to ensure proper data flow and direct navigation to tracker
-   * Now includes POI data when available
+   * Now includes POI data when available and validates tee selection
    */
   const handleStartRound = async () => {
     try {
@@ -209,19 +279,36 @@ export default function CourseSelectorScreen({ navigation }) {
         return;
       }
       
-      // Get the selected tee object
+      // Get the selected tee object from validated tees
       const selectedTee = selectedCourse.tees.find(tee => tee.id === selectedTeeId);
       
       if (!selectedTee) {
-        console.error("Selected tee not found");
+        console.error("Selected tee not found in validated tees");
+        Alert.alert(
+          "Selection Error",
+          "The selected tee is no longer available. Please select a different tee.",
+          [{ text: "OK" }]
+        );
         return;
       }
       
-      console.log("Starting round with:", {
+      // Additional validation: Ensure the selected tee has valid distance
+      if (!selectedTee.total_distance || selectedTee.total_distance <= 0) {
+        console.error("Selected tee has invalid distance:", selectedTee.total_distance);
+        Alert.alert(
+          "Invalid Tee Data",
+          "The selected tee has invalid distance information. Please select a different tee.",
+          [{ text: "OK" }]
+        );
+        return;
+      }
+      
+      console.log("Starting round with validated data:", {
         courseId: selectedCourse.id,
         courseName: selectedCourse.name,
         teeId: selectedTeeId,
         teeName: selectedTee.name,
+        teeDistance: selectedTee.total_distance,
         hasPoi: selectedCourse.poi ? "Yes" : "No"
       });
       
@@ -238,7 +325,7 @@ export default function CourseSelectorScreen({ navigation }) {
       }
       
       // Store the selected course and tee in AsyncStorage
-      // Now including POI data when available
+      // Now including POI data when available and ensuring tee has valid distance
       await AsyncStorage.setItem("selectedCourse", JSON.stringify({
         id: selectedCourse.id,
         name: selectedCourse.name,
@@ -247,6 +334,7 @@ export default function CourseSelectorScreen({ navigation }) {
         teeId: selectedTeeId,
         teeName: selectedTee.name,
         teeColor: selectedTee.color,
+        teeDistance: selectedTee.total_distance, // Store verified distance
         poi: courseWithPoi.poi || [] // Include POI data if available
       }));
       
@@ -290,6 +378,7 @@ export default function CourseSelectorScreen({ navigation }) {
   
   /**
    * Render a tee option
+   * Enhanced to only show validated tees with valid distances
    */
   const renderTeeOption = (tee) => (
     <TouchableOpacity
@@ -310,11 +399,10 @@ export default function CourseSelectorScreen({ navigation }) {
         <Typography variant="body" weight="medium" style={styles.teeName}>
           {tee.name}
         </Typography>
-        {tee.total_distance && (
-          <Typography variant="caption">
-            {tee.total_distance} yards
-          </Typography>
-        )}
+        {/* Display distance with validation - this should always be valid now */}
+        <Typography variant="caption">
+          {tee.total_distance.toLocaleString()} yards
+        </Typography>
       </View>
     </TouchableOpacity>
   );
@@ -338,6 +426,13 @@ export default function CourseSelectorScreen({ navigation }) {
     displayCourses = allCourses;
     isLoading = isLoadingAll;
   }
+  
+  // Determine if start button should be disabled
+  const isStartDisabled = !selectedCourse || 
+                         !selectedTeeId || 
+                         isLoadingCourseDetails ||
+                         !selectedCourse.tees ||
+                         selectedCourse.tees.length === 0;
   
   return (
     <Layout>
@@ -364,7 +459,7 @@ export default function CourseSelectorScreen({ navigation }) {
         )}
       </View>
 
-      {/* Rest of the existing content */}
+      {/* Recent courses header */}
       {!searchQuery.trim() && recentCourses.length > 0 && (
         <View style={styles.sectionHeader}>
           <Typography variant="subtitle" style={styles.sectionTitle}>
@@ -408,7 +503,7 @@ export default function CourseSelectorScreen({ navigation }) {
         )}
       </View>
       
-      {/* Tee Selection with Loading Indicator */}
+      {/* Tee Selection with Loading Indicator and Validation Feedback */}
       {selectedCourse && (
         <View style={styles.teeSelectionContainer}>
           <Typography variant="subtitle" style={styles.teeSelectionTitle}>
@@ -428,7 +523,8 @@ export default function CourseSelectorScreen({ navigation }) {
                 selectedCourse.tees.map(tee => renderTeeOption(tee))
               ) : (
                 <Typography variant="body" style={styles.noTeesText}>
-                  No tee information available for this course
+                  No tees with valid distance information are available for this course.
+                  Please select a different course.
                 </Typography>
               )}
             </View>
@@ -436,14 +532,14 @@ export default function CourseSelectorScreen({ navigation }) {
         </View>
       )}
       
-      {/* Start Round Button */}
+      {/* Start Round Button with Enhanced Validation */}
       <TouchableOpacity
         style={[
           styles.startButton,
-          (!selectedCourse || !selectedTeeId || isLoadingCourseDetails) && styles.disabledButton
+          isStartDisabled && styles.disabledButton
         ]}
         onPress={handleStartRound}
-        disabled={!selectedCourse || !selectedTeeId || isLoadingCourseDetails}
+        disabled={isStartDisabled}
       >
         <Typography 
           variant="button" 
