@@ -20,12 +20,8 @@
     },
     "icon": "./assets/icon.png",
     "android": {
-      "package": "com.daybeam.golfimprove",
-      "icon": "./assets/android/icon.png",
-      "adaptiveIcon": {
-        "foregroundImage": "./assets/android/adaptive-icon.png",
-        "backgroundColor": "#FFFFFF"
-      }
+      "package": "com.tmworl.golfimprove",
+      "icon": "./assets/android/icon.png"
     },
     "ios": {
       "bundleIdentifier": "com.daybeam.golfimprove",

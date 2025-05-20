@@ -2,6 +2,7 @@
 import React, { useEffect, useContext } from "react";
 import { createBottomTabNavigator } from "@react-navigation/bottom-tabs";
 import { createStackNavigator } from "@react-navigation/stack";
+import { getFocusedRouteNameFromRoute } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 
 // Import stack and screen components
@@ -88,7 +89,8 @@ const Tab = createBottomTabNavigator();
  * - Insights: For viewing AI-powered game analysis and improvement tips
  * - Profile: For user account settings
  * 
- * Analytics initialization occurs here after successful authentication
+ * Analytics initialization occurs here after successful authentication.
+ * Tab bar visibility is strategically controlled for focused user experiences.
  */
 export default function MainNavigator() {
   // Get the authenticated user from context
@@ -107,6 +109,29 @@ export default function MainNavigator() {
       };
     }
   }, [user]);
+  
+  /**
+   * Determines tab bar visibility based on focused route
+   * Hides tab bar for focused round experiences and scorecard reviews
+   * 
+   * @param {Object} route - Navigation route object
+   * @returns {string} CSS display value: 'none' or 'flex'
+   */
+  const getTabBarVisibility = (route) => {
+    const routeName = getFocusedRouteNameFromRoute(route);
+    
+    // Define screens where tab bar should be hidden for focused experience
+    const hiddenRoutes = [
+      // Home stack screens
+      'CourseSelector',    // Course selection flow
+      'Tracker',          // Active round tracking
+      'Scorecard',        // Scorecard after completing round
+      // Rounds stack screens
+      'ScorecardScreen'   // Historical scorecard review
+    ];
+    
+    return hiddenRoutes.includes(routeName) ? 'none' : 'flex';
+  };
   
   return (
     <Tab.Navigator
@@ -137,8 +162,24 @@ export default function MainNavigator() {
         },
       })}
     >
-      <Tab.Screen name="Home" component={HomeStack} />
-      <Tab.Screen name="Rounds" component={RoundsStackScreen} />
+      <Tab.Screen 
+        name="Home" 
+        component={HomeStack}
+        options={({ route }) => ({
+          tabBarStyle: {
+            display: getTabBarVisibility(route),
+          },
+        })}
+      />
+      <Tab.Screen 
+        name="Rounds" 
+        component={RoundsStackScreen}
+        options={({ route }) => ({
+          tabBarStyle: {
+            display: getTabBarVisibility(route),
+          },
+        })}
+      />
       <Tab.Screen name="Insights" component={InsightsStackScreen} />
       <Tab.Screen name="Profile" component={ProfileStackScreen} />
     </Tab.Navigator>

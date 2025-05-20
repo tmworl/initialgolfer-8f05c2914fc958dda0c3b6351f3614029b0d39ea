@@ -36,11 +36,11 @@ const sendToAnalytics = (level, args) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         event: 'console_' + level,
+        distinct_id: userId || 'anonymous',
         properties: {
           message: message,
           data: data,
           level: level,
-          distinct_id: userId || 'anonymous',
           timestamp: new Date().toISOString()
         }
       })
@@ -84,30 +84,6 @@ const initAnalytics = async () => {
 };
 
 /**
- * Direct method for explicit event tracking
- */
-const trackEvent = (eventName, properties = {}) => {
-  if (!analyticsInitialized) return;
-  
-  try {
-    fetch(ANALYTICS_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        event: eventName,
-        properties: {
-          ...properties,
-          distinct_id: userId || 'anonymous',
-          timestamp: new Date().toISOString()
-        }
-      })
-    }).catch(err => originalConsole.error('Analytics error:', err));
-  } catch (err) {
-    originalConsole.error('Analytics tracking error:', err);
-  }
-};
-
-/**
  * Reset analytics (for logout)
  */
 const resetAnalytics = () => {
@@ -123,6 +99,5 @@ const resetAnalytics = () => {
 
 export default {
   initAnalytics,
-  trackEvent,
   resetAnalytics
 };
