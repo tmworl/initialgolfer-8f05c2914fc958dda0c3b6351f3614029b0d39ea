@@ -4,6 +4,8 @@ import React, { createContext, useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Linking } from "react-native";
 import { supabase } from "../services/supabase";
+// Import navigation reference for programmatic navigation
+import { navigationRef } from "../../App";
 
 // Create an authentication context
 export const AuthContext = createContext();
@@ -27,6 +29,19 @@ export const AuthProvider = ({ children }) => {
   const [error, setError] = useState(null);
   // 'userPermissions' stores the user's product permissions
   const [userPermissions, setUserPermissions] = useState([]);
+
+  // Navigation function for successful verification
+  const handleSuccessfulVerification = useCallback(() => {
+    if (navigationRef.current) {
+      // Use resetRoot for React Navigation 6+
+      navigationRef.current.resetRoot({
+        index: 0,
+        routes: [{ name: 'Main' }],
+      });
+    } else {
+      console.warn("Navigation reference is not ready - can't redirect yet");
+    }
+  }, []);
 
   // Load user permissions from the database
   const loadUserPermissions = async (userId) => {
@@ -95,6 +110,9 @@ export const AuthProvider = ({ children }) => {
             // Clear pending verification state
             setPendingVerificationEmail(null);
             await AsyncStorage.removeItem('@GolfApp:pendingVerificationEmail');
+            
+            // Trigger navigation to main app
+            handleSuccessfulVerification();
           }
         }
       } catch (err) {
