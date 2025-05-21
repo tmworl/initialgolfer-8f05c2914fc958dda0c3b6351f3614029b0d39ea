@@ -14,6 +14,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.31.0';
 function preprocessSearchQuery(originalQuery: string): string {
   console.log(`[SERVER PREPROCESS] Original query: "${originalQuery}"`);
   
+  // Preserve multi-word club names
+  if (/golf club|country club|links/i.test(originalQuery)) {
+    console.log(`[SERVER PREPROCESS] Preserving club name: "${originalQuery}"`);
+    return originalQuery;
+  }
+  
   // STEP 1: Remove leading articles (the, a, an)
   let processed = originalQuery.replace(/^(the|a|an)\s+/i, '');
   
@@ -45,6 +51,60 @@ function preprocessSearchQuery(originalQuery: string): string {
   
   console.log(`[SERVER PREPROCESS] Processed query: "${processed}"`);
   return processed;
+}
+
+/**
+ * Improved search function that prioritizes exact matches over partial matches
+ */
+async function getCoursesWithImprovedSearch(supabase: any, query: string, limit: number) {
+  // First try exact matches (prioritized)
+  const { data: exactMatches, error: exactError } = await supabase
+    .from('courses')
+    .select('id, name, club_name, location, tees, poi, country, num_holes')
+    .or(`name.ilike.${query},club_name.ilike.${query}`) // No % wildcards = exact match
+    .limit(Math.min(5, limit));
+  
+  if (exactError) {
+    console.error("Error fetching exact matches:", exactError);
+  }
+  
+  // If we have enough exact matches, return them
+  if (exactMatches && exactMatches.length >= Math.min(3, limit)) {
+    console.log(`Found ${exactMatches.length} exact matches for "${query}"`);
+    return exactMatches;
+  }
+  
+  // Otherwise, get partial matches
+  const { data: partialMatches, error: partialError } = await supabase
+    .from('courses')
+    .select('id, name, club_name, location, tees, poi, country, num_holes')
+    .or(`name.ilike.%${query}%,location.ilike.%${query}%,club_name.ilike.%${query}%`)
+    .limit(limit);
+  
+  if (partialError) {
+    console.error("Error fetching partial matches:", partialError);
+    // Return exactMatches even if partial fetch failed
+    return exactMatches || [];
+  }
+  
+  // Combine results with exact matches first, removing duplicates
+  let combinedResults = [...(exactMatches || [])];
+  
+  if (partialMatches) {
+    // Add partial matches that aren't already in exact matches
+    partialMatches.forEach(match => {
+      if (!combinedResults.some(m => m.id === match.id)) {
+        combinedResults.push(match);
+      }
+    });
+  }
+  
+  // Log results
+  console.log(`Combined ${exactMatches?.length || 0} exact and ${
+    (combinedResults.length - (exactMatches?.length || 0))} partial matches`);
+  
+  // Return the combined list up to the limit
+  return combinedResults.slice(0, limit);
 }
 
 serve(async (req) => {
@@ -161,19 +221,10 @@ serve(async (req) => {
       const processedQuery = preprocessSearchQuery(searchQuery);
       console.log(`Executing search with processed query: "${processedQuery}"`);
       
-      // Search database first
-      let query = supabase
-        .from('courses')
-        .select('id, name, club_name, location, tees, poi, country, num_holes');
+      // Use the improved search function
+      const dbCourses = await getCoursesWithImprovedSearch(supabase, processedQuery, limit);
       
-      // Apply search filter with case-insensitive pattern matching using processed query
-      query = query.or(`name.ilike.%${processedQuery}%,location.ilike.%${processedQuery}%,club_name.ilike.%${processedQuery}%`);
-      
-      const { data: dbCourses, error: dbError } = await query
-        .order('name')
-        .limit(limit);
-        
-      if (!dbError && dbCourses) {
+      if (dbCourses && dbCourses.length > 0) {
         courses = dbCourses.map(course => ({
           ...course,
           has_tee_data: course.tees !== null && 
@@ -305,17 +356,13 @@ serve(async (req) => {
                 }
                 
                 // Refresh results to include newly added courses
-                const refreshQuery = `name.ilike.%${processedQuery}%,location.ilike.%${processedQuery}%,club_name.ilike.%${processedQuery}%`;
-                console.log(`Refreshing results with query: ${refreshQuery}`);
+                const refreshQuery = processedQuery;
+                console.log(`Refreshing results with processed query: ${refreshQuery}`);
                 
-                const { data: refreshedCourses, error: refreshError } = await supabase
-                  .from('courses')
-                  .select('id, name, club_name, location, tees, poi, country, num_holes')
-                  .or(refreshQuery)
-                  .order('name')
-                  .limit(limit);
-                  
-                if (!refreshError && refreshedCourses) {
+                // Use improved search for consistency
+                const refreshedCourses = await getCoursesWithImprovedSearch(supabase, refreshQuery, limit);
+                
+                if (refreshedCourses && refreshedCourses.length > 0) {
                   courses = refreshedCourses.map(course => ({
                     ...course,
                     has_tee_data: course.tees !== null && 

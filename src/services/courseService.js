@@ -32,6 +32,12 @@ const getAuthToken = async () => {
 export function preprocessSearchQuery(originalQuery) {
   console.log(`[PREPROCESS] Original: "${originalQuery}"`);
   
+  // Preserve multi-word club names 
+  if (/golf club|country club|links/i.test(originalQuery)) {
+    console.log(`[PREPROCESS] Preserving club name: "${originalQuery}"`);
+    return originalQuery;
+  }
+  
   // STEP 1: Remove leading articles (the, a, an)
   let processed = originalQuery.replace(/^(the|a|an)\s+/i, '');
   
