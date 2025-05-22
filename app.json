@@ -6,6 +6,7 @@
     "version": "1.1.16",
     "orientation": "portrait",
     "sdkVersion": "52.0.0",
+    "plugins": ["react-native-iap"],
     "extra": {
       "eas": {
         "projectId": "f533582e-60df-40c6-94a0-cb0d233655f5"

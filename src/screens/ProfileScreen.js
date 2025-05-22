@@ -7,7 +7,9 @@ import {
   TextInput, 
   TouchableWithoutFeedback,
   Keyboard,
-  Platform
+  Platform,
+  Alert,
+  Linking
 } from "react-native";
 import { AuthContext } from "../context/AuthContext";
 import { supabase } from "../services/supabase";
@@ -15,7 +17,136 @@ import Layout from "../ui/Layout";
 import theme from "../ui/theme";
 import Button from "../ui/components/Button";
 import Typography from "../ui/components/Typography";
+import PremiumButton from "../components/PremiumButton";
+import Card from "../ui/components/Card";
 import debounce from 'lodash/debounce';
+
+/**
+ * Subscription Management Component
+ * 
+ * Displays subscription status and management options.
+ * Provides IAP flow for non-premium users.
+ */
+const SubscriptionManagementSection = () => {
+  const { user, hasPermission } = useContext(AuthContext);
+  const isPremium = hasPermission("product_a");
+  
+  // Handle successful purchase completion
+  const handlePurchaseComplete = (result) => {
+    console.log("Purchase completed successfully:", result);
+  };
+  
+  // Handle failed purchase
+  const handlePurchaseFailed = (error) => {
+    console.error("Purchase failed:", error);
+  };
+  
+  // Open platform-specific subscription management
+  const openSubscriptionSettings = async () => {
+    try {
+      if (Platform.OS === 'ios') {
+        // Deep link to the App Store subscriptions page
+        await Linking.openURL('itms-apps://apps.apple.com/account/subscriptions');
+      } else if (Platform.OS === 'android') {
+        // Deep link to Google Play subscriptions
+        const packageName = "com.tmworl.golfimprove"; // From your app.json
+        await Linking.openURL(`https://play.google.com/store/account/subscriptions?package=${packageName}`);
+      }
+    } catch (error) {
+      console.error("Error opening subscription settings:", error);
+      Alert.alert(
+        "Couldn't Open Settings",
+        "Please manage your subscription through your device's app store settings."
+      );
+    }
+  };
+
+  return (
+    <Card style={styles.subscriptionCard}>
+      <Typography variant="subtitle" style={styles.sectionTitle}>
+        Premium Features
+      </Typography>
+      
+      {isPremium ? (
+        // Active subscription view
+        <View>
+          <View style={styles.statusContainer}>
+            <View style={styles.premiumBadge}>
+              <Typography variant="caption" weight="semibold" color="#FFF">
+                PREMIUM
+              </Typography>
+            </View>
+            <Typography variant="body" style={styles.statusText}>
+              Your premium features are active
+            </Typography>
+          </View>
+          
+          <Typography variant="body" style={styles.benefitText}>
+            You have access to advanced insights, detailed analytics, and personalized recommendations to improve your game.
+          </Typography>
+          
+          <Button
+            variant="outline"
+            onPress={openSubscriptionSettings}
+            iconRight="open-outline"
+            style={styles.manageButton}
+          >
+            Manage Subscription
+          </Button>
+        </View>
+      ) : (
+        // Non-subscriber view with purchase option
+        <View>
+          <Typography variant="body" style={styles.standardText}>
+            You're currently using the standard version
+          </Typography>
+          
+          {/* 
+            ===== VALUE PROPOSITION SECTION - CUSTOMIZE THIS =====
+            Edit this section to adjust the premium benefits messaging
+          */}
+          <View style={styles.benefitsContainer}>
+            <Typography variant="body" weight="semibold" style={styles.benefitsTitle}>
+              Premium benefits include:
+            </Typography>
+            
+            <View style={styles.benefitItem}>
+              <Typography variant="body" style={styles.benefitText}>
+                • Personalized shot analysis and recommendations
+              </Typography>
+            </View>
+            
+            <View style={styles.benefitItem}>
+              <Typography variant="body" style={styles.benefitText}>
+                • Detailed insights into your game patterns
+              </Typography>
+            </View>
+            
+            <View style={styles.benefitItem}>
+              <Typography variant="body" style={styles.benefitText}>
+                • Advanced stats across multiple rounds
+              </Typography>
+            </View>
+            
+            <View style={styles.benefitItem}>
+              <Typography variant="body" style={styles.benefitText}>
+                • GPS distance measurement to green
+              </Typography>
+            </View>
+          </View>
+          {/* ===== END VALUE PROPOSITION SECTION ===== */}
+          
+          <PremiumButton
+            label="Upgrade to Premium"
+            onPurchaseComplete={handlePurchaseComplete}
+            onPurchaseFailed={handlePurchaseFailed}
+            style={styles.upgradeButton}
+          />
+        </View>
+      )}
+    </Card>
+  );
+};
 
 /**
  * ProfileScreen Component
@@ -59,7 +190,6 @@ export default function ProfileScreen() {
   }, [user]);
   
   // Create debounced save function to prevent excessive database writes
-  // This creates a sophisticated debounce pattern with technical optimizations
   const debouncedSaveHandicap = useCallback(
     debounce(async (userId, newHandicap) => {
       if (!userId) return;
@@ -94,14 +224,13 @@ export default function ProfileScreen() {
       } finally {
         setIsSaving(false);
       }
-    }, 600), // 600ms debounce delay - technical optimization for input performance
-    [] // Empty dependency array ensures stable reference
+    }, 600),
+    []
   );
   
   // Handle handicap input changes with validation
   const handleHandicapChange = (text) => {
     // Enforce numeric input pattern with period allowed
-    // Uses sophisticated regex to ensure proper number format
     if (text === "" || /^-?\d*\.?\d*$/.test(text)) {
       setHandicap(text);
     }
@@ -189,6 +318,9 @@ export default function ProfileScreen() {
               Enter your official handicap index to track progress over time.
             </Typography>
           </View>
+          
+          {/* Subscription Management Section */}
+          <SubscriptionManagementSection />
           
           <View style={styles.spacer} />
           
@@ -295,5 +427,48 @@ const styles = StyleSheet.create({
   },
   signOutButton: {
     minWidth: 200,
+  },
+  
+  // Subscription component styles
+  subscriptionCard: {
+    width: "100%", 
+    marginTop: theme.spacing.medium,
+  },
+  statusContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: theme.spacing.medium,
+  },
+  premiumBadge: {
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  statusText: {
+    flex: 1,
+  },
+  standardText: {
+    marginBottom: theme.spacing.medium,
+    color: theme.colors.secondary,
+  },
+  benefitsContainer: {
+    marginBottom: theme.spacing.medium,
+  },
+  benefitsTitle: {
+    marginBottom: theme.spacing.small,
+  },
+  benefitItem: {
+    marginBottom: 4,
+  },
+  benefitText: {
+    color: theme.colors.secondary,
+  },
+  manageButton: {
+    marginTop: theme.spacing.medium,
+  },
+  upgradeButton: {
+    marginTop: theme.spacing.small,
   }
 });
