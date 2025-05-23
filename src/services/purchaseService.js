@@ -1,25 +1,13 @@
 // src/services/purchaseService.js
 //
-// Client-side purchase service for in-app purchases
-// Handles platform-specific implementations, receipt capture, and server communication
+// RevenueCat-based purchase service for in-app purchases
+// Handles purchase flow while maintaining existing permissions architecture
 
 import { Platform } from 'react-native';
-import * as RNIap from 'react-native-iap'; // Note: We would need to add this dependency to package.json
-import { supabase } from './supabase';
+import Purchases from 'react-native-purchases';
+import Constants from 'expo-constants';
 
-// Platform-specific product identifiers
-const PRODUCT_IDS = {
-  ios: ['com.daybeam.golfimprove.product_a'],
-  android: ['com.daybeam.golfimprove.product_a']
-};
-
-// Subscription product for premium insights
-const PREMIUM_INSIGHTS_PRODUCT = Platform.select({
-  ios: 'com.daybeam.golfimprove.product_a',
-  android: 'com.daybeam.golfimprove.product_a'
-});
-
-// Error types for structured error handling
+// Error types for structured error handling (maintaining existing interface)
 export const PURCHASE_ERROR_TYPES = {
   CONNECTION: 'connection_error',
   CANCELLED: 'user_cancelled',
@@ -29,310 +17,307 @@ export const PURCHASE_ERROR_TYPES = {
   SERVER: 'server_error'
 };
 
+// Keep your existing product identifiers
+const PRODUCT_IDS = {
+  ios: 'com.daybeam.golfimprove.product_a',
+  android: 'com.daybeam.golfimprove.product_a'
+};
+
+// Internal state tracking
+let isConfigured = false;
+let currentUserId = null;
+
 /**
- * Initialize the IAP module
- * Must be called before any other IAP operations
+ * Initialize RevenueCat SDK with user identification
+ * Must be called with user's profile_id before any other operations
+ * 
+ * @param {string} userId - User's profile_id from Supabase
+ * @returns {Promise<boolean>} Success status
  */
-export async function initializePurchases() {
+export async function initializePurchases(userId) {
   try {
-    await RNIap.initConnection();
-    console.log('IAP connection initialized');
+    console.log('Initializing RevenueCat for user:', userId);
+
+    // Get API keys from configuration
+    const apiKeys = Constants.expoConfig?.extra?.revenueCatApiKeys;
+    if (!apiKeys) {
+      throw new Error('RevenueCat API keys not found in configuration');
+    }
+
+    const apiKey = Platform.OS === 'ios' ? apiKeys.ios : apiKeys.android;
+    if (!apiKey) {
+      throw new Error(`RevenueCat API key not found for platform: ${Platform.OS}`);
+    }
+
+    // Configure with user's profile_id as app_user_id
+    await Purchases.configure({
+      apiKey: apiKey,
+      appUserID: userId  // profile_id becomes app_user_id in RevenueCat
+    });
+
+    // Enable debug logging in development
+    if (__DEV__) {
+      Purchases.setLogLevel(Purchases.LOG_LEVEL.DEBUG);
+    }
+
+    isConfigured = true;
+    currentUserId = userId;
     
-    // Enable purchase updates listener
-    purchaseUpdateSubscription = RNIap.purchaseUpdatedListener(handlePurchaseUpdate);
-    purchaseErrorSubscription = RNIap.purchaseErrorListener(handlePurchaseError);
-    
+    console.log('RevenueCat initialized successfully');
     return true;
+    
   } catch (error) {
-    console.error('Failed to initialize IAP connection:', error);
+    console.error('Failed to initialize RevenueCat:', error);
+    isConfigured = false;
     return false;
   }
 }
 
 /**
- * Clean up IAP listeners
- * Should be called when the app unmounts to prevent memory leaks
+ * Check if purchases are properly initialized
+ * @returns {boolean} Initialization status
  */
-export function cleanupPurchases() {
-  if (purchaseUpdateSubscription) {
-    purchaseUpdateSubscription.remove();
-    purchaseUpdateSubscription = null;
-  }
-  
-  if (purchaseErrorSubscription) {
-    purchaseErrorSubscription.remove();
-    purchaseErrorSubscription = null;
-  }
-  
-  // End connection when app is closed
-  RNIap.endConnection();
+export function isPurchasesReady() {
+  return isConfigured;
 }
 
-// Subscription references for event listeners
-let purchaseUpdateSubscription = null;
-let purchaseErrorSubscription = null;
-
 /**
- * Get available products from the store
- * Useful for displaying product information before purchase
+ * Get available offerings and packages from RevenueCat
+ * Replaces the previous getProducts() method
  * 
- * @returns {Promise<Array>} Available products with price, description, etc.
+ * @returns {Promise<Object>} Available offerings with packages
  */
-export async function getProducts() {
+export async function getOfferings() {
   try {
-    const products = await RNIap.getProducts(PRODUCT_IDS[Platform.OS]);
-    return products;
+    if (!isConfigured) {
+      throw new Error('RevenueCat not configured. Call initializePurchases first.');
+    }
+
+    const offerings = await Purchases.getOfferings();
+    console.log('Retrieved offerings:', offerings);
+    
+    return offerings;
+    
   } catch (error) {
-    console.error('Failed to get products:', error);
+    console.error('Failed to get offerings:', error);
     throw mapToPublicError(error);
   }
 }
 
 /**
- * Request purchase of premium insights subscription
+ * Purchase premium insights subscription using RevenueCat
+ * Maintains same interface as your existing purchasePremiumInsights()
  * 
- * @returns {Promise<Object>} Purchase result with subscription details
+ * @returns {Promise<Object>} Purchase result
  */
 export async function purchasePremiumInsights() {
   try {
-    // 1. Platform-specific purchase request
-    let receipt;
-    let purchaseToken;
-    
-    if (Platform.OS === 'ios') {
-      // iOS-specific purchase flow
-      const result = await RNIap.requestPurchase(PREMIUM_INSIGHTS_PRODUCT);
-      receipt = result.transactionReceipt;
-    } else {
-      // Android-specific purchase flow
-      const result = await RNIap.requestPurchase(PREMIUM_INSIGHTS_PRODUCT);
-      purchaseToken = result.purchaseToken;
-      receipt = purchaseToken; // For consistency in our API calls
+    if (!isConfigured) {
+      throw new Error('RevenueCat not configured. Call initializePurchases first.');
     }
+
+    console.log('Starting purchase flow for product_a');
+
+    // Get offerings to find the package for product_a
+    const offerings = await Purchases.getOfferings();
     
-    // 2. Get current user ID
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('User not authenticated');
+    // Find the package containing your subscription
+    // RevenueCat organizes products into offerings and packages
+    let packageToPurchase = null;
     
-    // 3. Validate purchase with server
-    const validationResult = await validatePurchaseWithServer(
-      receipt,
-      PREMIUM_INSIGHTS_PRODUCT,
-      user.id,
-      Platform.OS
-    );
-    
-    // If server validation failed, throw error
-    if (!validationResult.success) {
-      throw new Error(validationResult.error || 'Purchase validation failed');
+    // Search through all offerings for your product
+    Object.values(offerings.all).forEach(offering => {
+      offering.availablePackages.forEach(package => {
+        // Match against your existing product IDs
+        if (package.product.identifier === PRODUCT_IDS[Platform.OS]) {
+          packageToPurchase = package;
+        }
+      });
+    });
+
+    if (!packageToPurchase) {
+      throw new Error(`Product not found in offerings: ${PRODUCT_IDS[Platform.OS]}`);
     }
+
+    console.log('Found package to purchase:', packageToPurchase.identifier);
+
+    // Execute purchase through RevenueCat
+    const purchaseResult = await Purchases.purchasePackage(packageToPurchase);
     
-    // Return successful result
+    console.log('Purchase completed:', purchaseResult);
+
+    // Extract relevant information maintaining your interface
+    const customerInfo = purchaseResult.customerInfo;
+    const activeEntitlements = customerInfo.entitlements.active;
+
+    // Check if product_a entitlement is now active
+    const hasProductA = 'product_a' in activeEntitlements;
+    
+    if (!hasProductA) {
+      // Purchase went through but entitlement not active
+      // This might happen in edge cases, let webhook handle the sync
+      console.warn('Purchase completed but entitlement not immediately active');
+    }
+
+    // Return success in format compatible with your existing code
     return {
       success: true,
-      expires_at: validationResult.expires_at,
-      product_id: PREMIUM_INSIGHTS_PRODUCT
+      productId: packageToPurchase.product.identifier,
+      transactionId: purchaseResult.transaction?.transactionIdentifier,
+      customerInfo: customerInfo
     };
     
   } catch (error) {
     console.error('Purchase error:', error);
     
-    // Transform error to public-facing structure
+    // Transform RevenueCat errors to your existing interface
     const publicError = mapToPublicError(error);
     
-    // If user cancelled, return cancelled flag instead of error
+    // Handle user cancellation
     if (publicError.code === PURCHASE_ERROR_TYPES.CANCELLED) {
       return { cancelled: true };
     }
     
-    // Otherwise, return error structure
+    // Return error in your existing format
     return { error: publicError };
   }
 }
 
 /**
- * Validate purchase receipt with server
- * 
- * @param {string} receipt - Purchase receipt (iOS) or purchase token (Android)
- * @param {string} productId - Product identifier
- * @param {string} userId - User's profile ID
- * @param {string} platform - 'ios' or 'android'
- * @returns {Promise<Object>} Validation result
- */
-async function validatePurchaseWithServer(receipt, productId, userId, platform) {
-  try {
-    // Call our serverless function to validate the purchase
-    const { data, error } = await supabase.functions.invoke('process-purchase', {
-      body: { 
-        receipt, 
-        platform,
-        userId,
-        productId
-      }
-    });
-    
-    if (error) throw error;
-    return data;
-    
-  } catch (error) {
-    console.error('Server validation error:', error);
-    return { 
-      success: false, 
-      error: 'Server validation failed' 
-    };
-  }
-}
-
-/**
  * Restore previous purchases
+ * Maintains interface compatibility with existing code
  * 
  * @returns {Promise<Object>} Restoration result
  */
 export async function restorePurchases() {
   try {
-    // Get available purchases from the store
-    let purchases;
-    if (Platform.OS === 'ios') {
-      purchases = await RNIap.getAvailablePurchases();
+    if (!isConfigured) {
+      throw new Error('RevenueCat not configured. Call initializePurchases first.');
+    }
+
+    console.log('Restoring purchases');
+    
+    // RevenueCat handles the restoration automatically
+    const customerInfo = await Purchases.restorePurchases();
+    
+    // Check if product_a entitlement is active after restoration
+    const activeEntitlements = customerInfo.entitlements.active;
+    const hasProductA = 'product_a' in activeEntitlements;
+    
+    if (hasProductA) {
+      const entitlement = activeEntitlements.product_a;
+      return {
+        restored: true,
+        expires_at: entitlement.expirationDate
+      };
     } else {
-      purchases = await RNIap.getAvailablePurchases();
-    }
-    
-    // Filter for our premium product
-    const premiumPurchase = purchases.find(
-      purchase => purchase.productId === PREMIUM_INSIGHTS_PRODUCT
-    );
-    
-    // If no premium purchase found, return early
-    if (!premiumPurchase) {
-      return { restored: false, message: 'No previous purchases found' };
-    }
-    
-    // Get current user ID
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error('User not authenticated');
-    
-    // Extract receipt based on platform
-    let receipt;
-    if (Platform.OS === 'ios') {
-      receipt = premiumPurchase.transactionReceipt;
-    } else {
-      receipt = premiumPurchase.purchaseToken;
-    }
-    
-    // Validate with server
-    const validationResult = await validatePurchaseWithServer(
-      receipt,
-      PREMIUM_INSIGHTS_PRODUCT,
-      user.id,
-      Platform.OS
-    );
-    
-    if (!validationResult.success) {
-      return { 
-        restored: false, 
-        error: validationResult.error || 'Restoration validation failed' 
+      return {
+        restored: false,
+        message: 'No active subscriptions found'
       };
     }
-    
-    return { 
-      restored: true, 
-      expires_at: validationResult.expires_at 
-    };
     
   } catch (error) {
     console.error('Restore error:', error);
     
     const publicError = mapToPublicError(error);
-    return { 
-      restored: false, 
-      error: publicError 
+    return {
+      restored: false,
+      error: publicError
     };
   }
 }
 
 /**
- * Handle purchase update event
- * Called by RNIap's purchaseUpdatedListener
+ * Get current customer info and entitlements
+ * New method for checking subscription status via RevenueCat
  * 
- * @param {Object} purchase - Purchase object from RNIap
+ * @returns {Promise<Object>} Customer information
  */
-function handlePurchaseUpdate(purchase) {
-  console.log('Purchase updated:', purchase);
-  
-  // For consumables, finalize the purchase
-  if (purchase.productId !== PREMIUM_INSIGHTS_PRODUCT) {
-    RNIap.finishTransaction(purchase);
+export async function getCustomerInfo() {
+  try {
+    if (!isConfigured) {
+      throw new Error('RevenueCat not configured. Call initializePurchases first.');
+    }
+
+    const customerInfo = await Purchases.getCustomerInfo();
+    return customerInfo;
+    
+  } catch (error) {
+    console.error('Error getting customer info:', error);
+    throw mapToPublicError(error);
   }
 }
 
 /**
- * Handle purchase error event
- * Called by RNIap's purchaseErrorListener
- * 
- * @param {Object} error - Error object from RNIap
+ * Clean up RevenueCat listeners
+ * Updated for RevenueCat SDK
  */
-function handlePurchaseError(error) {
-  console.error('Purchase error listener:', error);
+export function cleanupPurchases() {
+  // RevenueCat handles cleanup automatically
+  // No manual listener cleanup required
+  console.log('Purchases cleanup called');
 }
 
 /**
- * Map RNIap or network errors to public-facing error structure
+ * Map RevenueCat errors to your existing public error structure
+ * Maintains compatibility with existing error handling
  * 
- * @param {Error} error - Internal error object
+ * @param {Error} error - RevenueCat error object
  * @returns {Object} Public-facing error structure
  */
 function mapToPublicError(error) {
-  // Default error structure
   const publicError = {
     code: PURCHASE_ERROR_TYPES.UNKNOWN,
     message: 'An unknown error occurred'
   };
-  
-  // Process specific error codes from RNIap
+
+  // Map RevenueCat error codes to your existing structure
   if (error.code) {
-    switch(error.code) {
-      case 'E_USER_CANCELLED':
+    switch (error.code) {
+      case 'USER_CANCELLED':
         publicError.code = PURCHASE_ERROR_TYPES.CANCELLED;
         publicError.message = 'Purchase was cancelled';
         break;
         
-      case 'E_ALREADY_OWNED':
+      case 'ITEM_ALREADY_OWNED':
         publicError.code = PURCHASE_ERROR_TYPES.ALREADY_OWNED;
         publicError.message = 'You already own this item';
         break;
         
-      case 'E_NOT_PREPARED':
+      case 'STORE_PROBLEM':
         publicError.code = PURCHASE_ERROR_TYPES.CONNECTION;
         publicError.message = 'Store connection failed';
         break;
         
-      case 'E_REMOTE_ERROR':
+      case 'INVALID_PURCHASE':
         publicError.code = PURCHASE_ERROR_TYPES.SERVER;
-        publicError.message = 'Server validation failed';
+        publicError.message = 'Purchase validation failed';
         break;
         
       default:
         publicError.message = error.message || 'Purchase failed';
     }
   } else if (error.message) {
-    // Handle network or other errors
-    if (error.message.includes('network')) {
+    if (error.message.includes('network') || error.message.includes('connection')) {
       publicError.code = PURCHASE_ERROR_TYPES.CONNECTION;
       publicError.message = 'Network connection failed';
     } else {
       publicError.message = error.message;
     }
   }
-  
+
   return publicError;
 }
 
+// Export the same interface your existing code expects
 export default {
   initializePurchases,
   cleanupPurchases,
-  getProducts,
+  getOfferings,  // Replaces getProducts
   purchasePremiumInsights,
   restorePurchases,
+  getCustomerInfo,  // New method for checking subscription status
+  isPurchasesReady,  // New method for checking initialization
   PURCHASE_ERROR_TYPES
 };

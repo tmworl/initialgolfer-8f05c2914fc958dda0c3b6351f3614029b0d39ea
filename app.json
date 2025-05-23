@@ -10,6 +10,10 @@
     "extra": {
       "eas": {
         "projectId": "f533582e-60df-40c6-94a0-cb0d233655f5"
+      },
+      "revenueCatApiKeys": {
+        "ios": "appl_sPLjlKFZVWUEozFCRkPGqNGaNnu",
+        "android": "goog_zuoAVlHLiWJaWNpBstqollHHDNk"
       }
     },
     "owner": "daybeam",

@@ -4,6 +4,7 @@ import React, { createContext, useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Linking } from "react-native";
 import { supabase } from "../services/supabase";
+import purchaseService from "../services/purchaseService";
 // Import navigation reference for programmatic navigation
 import { navigationRef } from "../../App";
 
@@ -13,6 +14,24 @@ export const AuthContext = createContext();
 // Utility function to check email verification status
 const checkEmailVerification = (userData) => {
   return userData && userData.email_confirmed_at ? true : false;
+};
+
+// RevenueCat initialization helper - non-blocking and failure-tolerant
+const initializeRevenueCatForUser = async (userId) => {
+  try {
+    console.log("Initializing RevenueCat for user:", userId);
+    const initialized = await purchaseService.initializePurchases(userId);
+    if (initialized) {
+      console.log("RevenueCat initialized successfully for user:", userId);
+    } else {
+      console.warn("RevenueCat initialization failed - purchases disabled but app continues normally");
+    }
+    return initialized;
+  } catch (error) {
+    console.error("RevenueCat initialization error:", error);
+    // This is non-blocking - app continues to function normally
+    return false;
+  }
 };
 
 // AuthProvider wraps the entire app and provides auth state and functions
@@ -105,6 +124,11 @@ export const AuthProvider = ({ children }) => {
           // Load user permissions
           await loadUserPermissions(data.session.user.id);
           
+          // Initialize RevenueCat for verified user (non-blocking)
+          if (isVerified) {
+            initializeRevenueCatForUser(data.session.user.id);
+          }
+          
           if (isVerified && pendingVerificationEmail) {
             console.log("Email verified successfully!");
             // Clear pending verification state
@@ -135,6 +159,10 @@ export const AuthProvider = ({ children }) => {
           
           // Load user permissions
           await loadUserPermissions(data.session.user.id);
+          
+          // Initialize RevenueCat for existing authenticated user (non-blocking)
+          // This happens in background and doesn't affect app startup
+          initializeRevenueCatForUser(data.session.user.id);
         } else {
           // No active session, check for pending verification
           const pendingEmail = await AsyncStorage.getItem('@GolfApp:pendingVerificationEmail');
@@ -152,7 +180,7 @@ export const AuthProvider = ({ children }) => {
     initAuth();
 
     // Subscribe to auth state changes. This ensures our UI always reflects the latest auth state.
-    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
       console.log("Auth state changed:", event);
       
       if (session?.user) {
@@ -162,7 +190,11 @@ export const AuthProvider = ({ children }) => {
         setEmailVerified(isVerified);
         
         // Load user permissions
-        loadUserPermissions(session.user.id);
+        await loadUserPermissions(session.user.id);
+        
+        // Initialize RevenueCat for authenticated user (non-blocking)
+        // This runs asynchronously and doesn't block the auth flow
+        initializeRevenueCatForUser(session.user.id);
         
         // If user is now verified and we had a pending verification, clear it
         if (isVerified && pendingVerificationEmail) {
@@ -206,6 +238,10 @@ export const AuthProvider = ({ children }) => {
         
         // Load user permissions after successful sign in
         await loadUserPermissions(data.user.id);
+        
+        // Initialize RevenueCat for signed-in user (non-blocking)
+        // User can continue using app immediately, purchases initialize in background
+        initializeRevenueCatForUser(data.user.id);
       }
     } catch (err) {
       setError("An unexpected error occurred during sign in.");
@@ -244,6 +280,8 @@ export const AuthProvider = ({ children }) => {
         // Store pending verification email
         setPendingVerificationEmail(email);
         await AsyncStorage.setItem('@GolfApp:pendingVerificationEmail', email);
+        
+        // Note: RevenueCat initialization happens only after email verification
       }
     } catch (err) {
       setError("An unexpected error occurred during sign up.");
@@ -304,6 +342,9 @@ export const AuthProvider = ({ children }) => {
         setPendingVerificationEmail(null);
         setUserPermissions([]); // Clear permissions on sign out
         await AsyncStorage.removeItem('@GolfApp:pendingVerificationEmail');
+        
+        // RevenueCat will automatically clean up when user signs out
+        // No manual cleanup needed
       }
     } catch (err) {
       setError("Failed to sign out");
