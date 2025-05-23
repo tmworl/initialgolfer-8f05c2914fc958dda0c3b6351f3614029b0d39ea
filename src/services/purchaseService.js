@@ -126,11 +126,12 @@ export async function purchasePremiumInsights() {
     let packageToPurchase = null;
     
     // Search through all offerings for your product
+    // Fixed: Renamed 'package' parameter to 'rcPackage' to avoid reserved word conflict
     Object.values(offerings.all).forEach(offering => {
-      offering.availablePackages.forEach(package => {
+      offering.availablePackages.forEach(rcPackage => {
         // Match against your existing product IDs
-        if (package.product.identifier === PRODUCT_IDS[Platform.OS]) {
-          packageToPurchase = package;
+        if (rcPackage.product.identifier === PRODUCT_IDS[Platform.OS]) {
+          packageToPurchase = rcPackage;
         }
       });
     });
