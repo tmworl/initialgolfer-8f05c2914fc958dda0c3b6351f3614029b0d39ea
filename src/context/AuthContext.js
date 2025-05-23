@@ -5,6 +5,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Linking } from "react-native";
 import { supabase } from "../services/supabase";
 import purchaseService from "../services/purchaseService";
+import { usePostHog } from 'posthog-react-native';
 // Import navigation reference for programmatic navigation
 import { navigationRef } from "../../App";
 
@@ -48,6 +49,8 @@ export const AuthProvider = ({ children }) => {
   const [error, setError] = useState(null);
   // 'userPermissions' stores the user's product permissions
   const [userPermissions, setUserPermissions] = useState([]);
+  // Add PostHog hook
+  const posthog = usePostHog();
 
   // Navigation function for successful verification
   const handleSuccessfulVerification = useCallback(() => {
@@ -240,8 +243,21 @@ export const AuthProvider = ({ children }) => {
         await loadUserPermissions(data.user.id);
         
         // Initialize RevenueCat for signed-in user (non-blocking)
-        // User can continue using app immediately, purchases initialize in background
         initializeRevenueCatForUser(data.user.id);
+        
+        // ADD: PostHog user identification (non-blocking)
+        try {
+          posthog.identify(data.user.id, {
+            email: data.user.email,
+            email_verified: checkEmailVerification(data.user),
+            sign_in_method: 'email_password',
+            user_created_at: data.user.created_at,
+          });
+          console.log('[Analytics] User identified successfully');
+        } catch (analyticsError) {
+          console.warn('[Analytics] Failed to identify user:', analyticsError);
+          // Don't block sign-in flow for analytics failures
+        }
       }
     } catch (err) {
       setError("An unexpected error occurred during sign in.");
@@ -343,8 +359,13 @@ export const AuthProvider = ({ children }) => {
         setUserPermissions([]); // Clear permissions on sign out
         await AsyncStorage.removeItem('@GolfApp:pendingVerificationEmail');
         
-        // RevenueCat will automatically clean up when user signs out
-        // No manual cleanup needed
+        // ADD: Reset PostHog analytics
+        try {
+          posthog.reset();
+          console.log('[Analytics] Analytics reset on sign out');
+        } catch (analyticsError) {
+          console.warn('[Analytics] Failed to reset analytics:', analyticsError);
+        }
       }
     } catch (err) {
       setError("Failed to sign out");

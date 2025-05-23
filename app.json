@@ -35,6 +35,9 @@
         "NSLocationAlwaysUsageDescription": "This app uses your location to calculate distances while you play golf."
       },
       "icon": "./assets/ios/icon.png"
-    }
+    },
+    "plugins": [
+      "expo-localization"
+    ]
   }
 }

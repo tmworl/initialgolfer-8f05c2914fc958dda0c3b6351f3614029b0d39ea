@@ -12,9 +12,8 @@ import ScorecardScreen from "../screens/ScorecardScreen";
 import InsightsScreen from "../screens/InsightsScreen";
 import ProfileScreen from "../screens/ProfileScreen";
 
-// Import authentication context and analytics service
+// Import authentication context
 import { AuthContext } from "../context/AuthContext";
-import analyticsService from "../services/analyticsService";
 
 // Create stack navigators for each tab section
 const RoundsStack = createStackNavigator();
@@ -89,26 +88,11 @@ const Tab = createBottomTabNavigator();
  * - Insights: For viewing AI-powered game analysis and improvement tips
  * - Profile: For user account settings
  * 
- * Analytics initialization occurs here after successful authentication.
  * Tab bar visibility is strategically controlled for focused user experiences.
  */
 export default function MainNavigator() {
   // Get the authenticated user from context
   const { user } = useContext(AuthContext);
-  
-  // Initialize analytics after authentication
-  useEffect(() => {
-    if (user) {
-      console.log('MainNavigator: Initializing analytics for authenticated user');
-      analyticsService.initAnalytics();
-      
-      // Clean up analytics on component unmount or user change
-      return () => {
-        console.log('MainNavigator: Cleaning up analytics');
-        analyticsService.resetAnalytics();
-      };
-    }
-  }, [user]);
   
   /**
    * Determines tab bar visibility based on focused route
