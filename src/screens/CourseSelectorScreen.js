@@ -8,8 +8,11 @@
 //
 // ARCHITECTURAL ENHANCEMENT: Added zero-distance tee filtering to prevent
 // invalid data from propagating through the application pipeline.
+//
+// ANALYTICS: Decoupled architecture - analytics captured via useEffect monitoring
+// rather than inline callbacks to prevent React state conflicts.
 
-import React, { useState, useEffect, useCallback, useContext } from "react";
+import React, { useState, useEffect, useCallback, useContext, useRef } from "react";
 import { 
   View, 
   FlatList, 
@@ -21,6 +24,7 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { usePostHog } from 'posthog-react-native';
 import Layout from "../ui/Layout";
 import theme from "../ui/theme";
 import { getAllCourses, searchCourses, getRecentCourses, getCourseById, ensureCourseHasPoiData } from "../services/courseService";
@@ -37,10 +41,16 @@ import { AuthContext } from "../context/AuthContext";
  * 
  * ENHANCED: Now includes validation to filter out tees with zero distances
  * to prevent downstream crashes and invalid data propagation.
+ * 
+ * ANALYTICS: Decoupled architecture prevents state conflicts while maintaining
+ * comprehensive conversion funnel intelligence.
  */
 export default function CourseSelectorScreen({ navigation }) {
   // Get the current user from context
   const { user } = useContext(AuthContext);
+  
+  // PostHog analytics hook
+  const posthog = usePostHog();
   
   // State for courses and selection
   const [allCourses, setAllCourses] = useState([]);
@@ -58,6 +68,160 @@ export default function CourseSelectorScreen({ navigation }) {
   const [isSearching, setIsSearching] = useState(false);
   const [searchResults, setSearchResults] = useState([]);
   const [showSkeletons, setShowSkeletons] = useState(false);
+
+  // Analytics tracking references
+  const screenEntryTimeRef = useRef(Date.now());
+  const searchStartTimeRef = useRef(null);
+  const courseSelectionStartRef = useRef(null);
+  const roundStartInitiationRef = useRef(null);
+  
+  // Analytics monitoring references - for decoupled event tracking
+  const previousSearchQueryRef = useRef("");
+  const previousSelectedCourseRef = useRef(null);
+  const previousSelectedTeeRef = useRef(null);
+  const previousSearchResultsRef = useRef([]);
+
+  // Analytics: Track screen entry
+  useEffect(() => {
+    if (posthog && user) {
+      posthog.capture('course_selector_entered', {
+        profile_id: user.id,
+        timestamp: new Date().toISOString(),
+        entry_time: screenEntryTimeRef.current
+      });
+    }
+  }, [posthog, user]);
+
+  // DECOUPLED ANALYTICS: Monitor search query changes
+  useEffect(() => {
+    if (!user || !posthog) return;
+    
+    const currentQuery = searchQuery.trim();
+    const previousQuery = previousSearchQueryRef.current;
+    
+    // Detect search initiation
+    if (currentQuery.length >= 3 && previousQuery.length < 3) {
+      searchStartTimeRef.current = Date.now();
+      
+      posthog.capture('course_search_initiated', {
+        profile_id: user.id,
+        search_query: currentQuery,
+        query_length: currentQuery.length,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Detect search completion (when results are received)
+    if (currentQuery.length >= 3 && searchResults.length !== previousSearchResultsRef.current.length) {
+      const searchDuration = searchStartTimeRef.current ? Date.now() - searchStartTimeRef.current : null;
+      
+      posthog.capture('course_search_completed', {
+        profile_id: user.id,
+        search_query: currentQuery,
+        results_count: searchResults.length,
+        search_duration_ms: searchDuration,
+        has_results: searchResults.length > 0,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Detect search clearing
+    if (currentQuery.length === 0 && previousQuery.length > 0) {
+      posthog.capture('course_search_cleared', {
+        profile_id: user.id,
+        previous_query: previousQuery,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Update references
+    previousSearchQueryRef.current = currentQuery;
+    previousSearchResultsRef.current = [...searchResults];
+    
+  }, [searchQuery, searchResults, user, posthog]);
+
+  // DECOUPLED ANALYTICS: Monitor course selection changes
+  useEffect(() => {
+    if (!user || !posthog) return;
+    
+    const currentCourse = selectedCourse;
+    const previousCourse = previousSelectedCourseRef.current;
+    
+    // Detect course selection
+    if (currentCourse && (!previousCourse || currentCourse.id !== previousCourse.id)) {
+      courseSelectionStartRef.current = Date.now();
+      
+      posthog.capture('course_selected', {
+        profile_id: user.id,
+        course_id: currentCourse.id,
+        course_name: currentCourse.name,
+        club_name: currentCourse.club_name,
+        location: currentCourse.location,
+        has_tee_data: currentCourse.has_tee_data || (currentCourse.tees && currentCourse.tees.length > 0),
+        has_poi_data: currentCourse.has_poi_data || (currentCourse.poi && currentCourse.poi.length > 0),
+        tees_count: currentCourse.tees ? currentCourse.tees.length : 0,
+        was_searching: searchQuery.trim().length > 0,
+        search_query: searchQuery.trim() || null,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Detect course deselection
+    if (!currentCourse && previousCourse) {
+      posthog.capture('course_deselected', {
+        profile_id: user.id,
+        previous_course_id: previousCourse.id,
+        previous_course_name: previousCourse.name,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Update reference
+    previousSelectedCourseRef.current = currentCourse;
+    
+  }, [selectedCourse, user, posthog, searchQuery]);
+
+  // DECOUPLED ANALYTICS: Monitor tee selection changes
+  useEffect(() => {
+    if (!user || !posthog || !selectedCourse) return;
+    
+    const currentTeeId = selectedTeeId;
+    const previousTeeId = previousSelectedTeeRef.current;
+    
+    // Detect tee selection
+    if (currentTeeId && currentTeeId !== previousTeeId) {
+      const selectedTee = selectedCourse.tees?.find(tee => tee.id === currentTeeId);
+      
+      if (selectedTee) {
+        posthog.capture('tee_selected', {
+          profile_id: user.id,
+          course_id: selectedCourse.id,
+          course_name: selectedCourse.name,
+          tee_id: currentTeeId,
+          tee_name: selectedTee.name,
+          tee_color: selectedTee.color,
+          tee_distance: selectedTee.total_distance,
+          course_rating: selectedTee.course_rating_men,
+          slope_rating: selectedTee.slope_men,
+          timestamp: new Date().toISOString()
+        });
+      }
+    }
+    
+    // Detect tee deselection
+    if (!currentTeeId && previousTeeId) {
+      posthog.capture('tee_deselected', {
+        profile_id: user.id,
+        course_id: selectedCourse.id,
+        previous_tee_id: previousTeeId,
+        timestamp: new Date().toISOString()
+      });
+    }
+    
+    // Update reference
+    previousSelectedTeeRef.current = currentTeeId;
+    
+  }, [selectedTeeId, selectedCourse, user, posthog]);
   
   // Debounced search function to avoid too many API calls
   const debouncedSearch = useCallback(
@@ -71,6 +235,16 @@ export default function CourseSelectorScreen({ navigation }) {
           setSearchResults(results);
         } catch (error) {
           console.error("Error searching courses:", error);
+          
+          // Analytics: Track search error
+          if (posthog && user) {
+            posthog.capture('course_search_error', {
+              profile_id: user.id,
+              search_query: query,
+              error_message: error.message,
+              timestamp: new Date().toISOString()
+            });
+          }
         } finally {
           setShowSkeletons(false);
           setIsSearching(false);
@@ -79,7 +253,7 @@ export default function CourseSelectorScreen({ navigation }) {
         setSearchResults([]);
       }
     }, 1000),
-    []
+    [posthog, user]
   );
   
   // Load recent courses when component mounts
@@ -89,35 +263,90 @@ export default function CourseSelectorScreen({ navigation }) {
       
       try {
         setIsLoadingRecent(true);
+        
+        // Analytics: Track recent courses load start
+        if (posthog) {
+          posthog.capture('recent_courses_load_started', {
+            profile_id: user.id,
+            timestamp: new Date().toISOString()
+          });
+        }
+        
         const recentCoursesData = await getRecentCourses(user.id);
         console.log("Loaded recent courses:", recentCoursesData.length);
         setRecentCourses(recentCoursesData);
+        
+        // Analytics: Track successful recent courses load
+        if (posthog) {
+          posthog.capture('recent_courses_load_success', {
+            profile_id: user.id,
+            courses_count: recentCoursesData.length,
+            has_recent_courses: recentCoursesData.length > 0,
+            timestamp: new Date().toISOString()
+          });
+        }
       } catch (error) {
         console.error("Error loading recent courses:", error);
+        
+        // Analytics: Track recent courses load error
+        if (posthog && user) {
+          posthog.capture('recent_courses_load_error', {
+            profile_id: user.id,
+            error_message: error.message,
+            timestamp: new Date().toISOString()
+          });
+        }
       } finally {
         setIsLoadingRecent(false);
       }
     };
     
     loadRecentCourses();
-  }, [user]);
+  }, [user, posthog]);
   
   // Load all courses as a fallback when component mounts
   useEffect(() => {
     const loadAllCourses = async () => {
       try {
         setIsLoadingAll(true);
+        
+        // Analytics: Track all courses load start
+        if (posthog && user) {
+          posthog.capture('all_courses_load_started', {
+            profile_id: user.id,
+            timestamp: new Date().toISOString()
+          });
+        }
+        
         const coursesData = await getAllCourses();
         setAllCourses(coursesData);
+        
+        // Analytics: Track successful all courses load
+        if (posthog && user) {
+          posthog.capture('all_courses_load_success', {
+            profile_id: user.id,
+            courses_count: coursesData.length,
+            timestamp: new Date().toISOString()
+          });
+        }
       } catch (error) {
         console.error("Error loading all courses:", error);
+        
+        // Analytics: Track all courses load error
+        if (posthog && user) {
+          posthog.capture('all_courses_load_error', {
+            profile_id: user.id,
+            error_message: error.message,
+            timestamp: new Date().toISOString()
+          });
+        }
       } finally {
         setIsLoadingAll(false);
       }
     };
     
     loadAllCourses();
-  }, []);
+  }, [user, posthog]);
   
   // Effect to trigger search when query changes
   useEffect(() => {
@@ -157,28 +386,31 @@ export default function CourseSelectorScreen({ navigation }) {
   }, []);
   
   /**
-   * Handle search query changes
+   * PURE STATE UPDATE: Handle search query changes
+   * Analytics removed from this callback - now handled by useEffect monitoring
    */
-  const handleSearchChange = (text) => {
+  const handleSearchChange = useCallback((text) => {
     setSearchQuery(text);
     if (text.trim().length < 3) {
       setSearchResults([]);
     }
-  };
+  }, []);
   
   /**
-   * Clear search and results
+   * PURE STATE UPDATE: Clear search and results
+   * Analytics removed from this callback - now handled by useEffect monitoring
    */
-  const handleClearSearch = () => {
+  const handleClearSearch = useCallback(() => {
     setSearchQuery("");
     setSearchResults([]);
-  };
+  }, []);
   
   /**
-   * Handle selecting a course
+   * PURE STATE UPDATE: Handle selecting a course
    * Enhanced to validate tee data and fetch detailed course data when tees are missing
+   * Analytics removed from this callback - now handled by useEffect monitoring
    */
-  const handleCourseSelect = async (course) => {
+  const handleCourseSelect = useCallback(async (course) => {
     try {
       // Validate existing tees before setting selected course
       const validTees = validateTees(course.tees);
@@ -203,6 +435,17 @@ export default function CourseSelectorScreen({ navigation }) {
           console.log("Course has no valid tees, fetching complete details");
           setIsLoadingCourseDetails(true);
           
+          // Analytics: Track course details fetch start
+          if (posthog && user) {
+            posthog.capture('course_details_fetch_started', {
+              profile_id: user.id,
+              course_id: course.id,
+              course_name: course.name,
+              reason: 'missing_tee_data',
+              timestamp: new Date().toISOString()
+            });
+          }
+          
           // Get detailed course info with tees data
           const detailedCourse = await getCourseById(course.id);
           
@@ -225,12 +468,35 @@ export default function CourseSelectorScreen({ navigation }) {
               setSelectedTeeId(validDetailedTees[0].id);
             }
             
+            // Analytics: Track successful course details fetch
+            if (posthog && user) {
+              posthog.capture('course_details_fetch_success', {
+                profile_id: user.id,
+                course_id: course.id,
+                course_name: course.name,
+                tees_found: detailedCourse.tees.length,
+                valid_tees: validDetailedTees.length,
+                auto_selected_tee: validDetailedTees.length === 1,
+                timestamp: new Date().toISOString()
+              });
+            }
+            
             if (validDetailedTees.length === 0) {
               Alert.alert(
                 "No Valid Tees",
                 "This course has no tees with valid distance data. Please select a different course.",
                 [{ text: "OK" }]
               );
+              
+              // Analytics: Track no valid tees error
+              if (posthog && user) {
+                posthog.capture('course_selection_error', {
+                  profile_id: user.id,
+                  course_id: course.id,
+                  error_type: 'no_valid_tees',
+                  timestamp: new Date().toISOString()
+                });
+              }
             }
           } else {
             console.warn("Failed to retrieve valid tee data for course:", course.id);
@@ -239,6 +505,16 @@ export default function CourseSelectorScreen({ navigation }) {
               "This course doesn't have complete tee information. Please select a different course.",
               [{ text: "OK" }]
             );
+            
+            // Analytics: Track tee data unavailable error
+            if (posthog && user) {
+              posthog.capture('course_selection_error', {
+                profile_id: user.id,
+                course_id: course.id,
+                error_type: 'tee_data_unavailable',
+                timestamp: new Date().toISOString()
+              });
+            }
           }
         } catch (error) {
           console.error("Error fetching detailed course info:", error);
@@ -247,6 +523,16 @@ export default function CourseSelectorScreen({ navigation }) {
             "There was a problem loading the course details. Please try again.",
             [{ text: "OK" }]
           );
+          
+          // Analytics: Track course details fetch error
+          if (posthog && user) {
+            posthog.capture('course_details_fetch_error', {
+              profile_id: user.id,
+              course_id: course.id,
+              error_message: error.message,
+              timestamp: new Date().toISOString()
+            });
+          }
         } finally {
           setIsLoadingCourseDetails(false);
         }
@@ -258,25 +544,51 @@ export default function CourseSelectorScreen({ navigation }) {
         "There was a problem selecting this course. Please try again.",
         [{ text: "OK" }]
       );
+      
+      // Analytics: Track general course selection error
+      if (posthog && user) {
+        posthog.capture('course_selection_error', {
+          profile_id: user.id,
+          course_id: course.id,
+          error_type: 'general_selection_error',
+          error_message: error.message,
+          timestamp: new Date().toISOString()
+        });
+      }
     }
-  };
+  }, [validateTees, posthog, user]);
   
   /**
-   * Handle selecting a tee
+   * PURE STATE UPDATE: Handle selecting a tee
+   * Analytics removed from this callback - now handled by useEffect monitoring
    */
-  const handleTeeSelect = (teeId) => {
+  const handleTeeSelect = useCallback((teeId) => {
     setSelectedTeeId(teeId);
-  };
+  }, []);
   
   /**
    * Start a round with the selected course and tee
    * Enhanced to ensure proper data flow and direct navigation to tracker
    * Now includes POI data when available and validates tee selection
+   * Analytics: Comprehensive round start tracking
    */
-  const handleStartRound = async () => {
+  const handleStartRound = useCallback(async () => {
     try {
       if (!selectedCourse || !selectedTeeId) {
         return;
+      }
+      
+      roundStartInitiationRef.current = Date.now();
+      
+      // Analytics: Track round start initiation
+      if (posthog && user) {
+        posthog.capture('round_start_initiated', {
+          profile_id: user.id,
+          course_id: selectedCourse.id,
+          course_name: selectedCourse.name,
+          tee_id: selectedTeeId,
+          timestamp: new Date().toISOString()
+        });
       }
       
       // Get the selected tee object from validated tees
@@ -289,6 +601,17 @@ export default function CourseSelectorScreen({ navigation }) {
           "The selected tee is no longer available. Please select a different tee.",
           [{ text: "OK" }]
         );
+        
+        // Analytics: Track tee not found error
+        if (posthog && user) {
+          posthog.capture('round_start_error', {
+            profile_id: user.id,
+            course_id: selectedCourse.id,
+            tee_id: selectedTeeId,
+            error_type: 'tee_not_found',
+            timestamp: new Date().toISOString()
+          });
+        }
         return;
       }
       
@@ -300,6 +623,18 @@ export default function CourseSelectorScreen({ navigation }) {
           "The selected tee has invalid distance information. Please select a different tee.",
           [{ text: "OK" }]
         );
+        
+        // Analytics: Track invalid tee data error
+        if (posthog && user) {
+          posthog.capture('round_start_error', {
+            profile_id: user.id,
+            course_id: selectedCourse.id,
+            tee_id: selectedTeeId,
+            error_type: 'invalid_tee_distance',
+            tee_distance: selectedTee.total_distance,
+            timestamp: new Date().toISOString()
+          });
+        }
         return;
       }
       
@@ -312,16 +647,59 @@ export default function CourseSelectorScreen({ navigation }) {
         hasPoi: selectedCourse.poi ? "Yes" : "No"
       });
       
+      // Analytics: Track pre-load POI attempt
+      if (posthog && user) {
+        posthog.capture('round_start_checkpoint', {
+          profile_id: user.id,
+          course_id: selectedCourse.id,
+          checkpoint: 'poi_preload_started',
+          has_existing_poi: !!(selectedCourse.poi && selectedCourse.poi.length > 0),
+          timestamp: new Date().toISOString()
+        });
+      }
+      
       // Pre-load POI data if needed - optimization for better in-round experience
       let courseWithPoi = selectedCourse;
       if (!selectedCourse.poi && selectedCourse.id) {
         try {
           console.log("Pre-loading POI data for course");
           courseWithPoi = await ensureCourseHasPoiData(selectedCourse.id);
+          
+          // Analytics: Track POI preload success
+          if (posthog && user) {
+            posthog.capture('round_start_checkpoint', {
+              profile_id: user.id,
+              course_id: selectedCourse.id,
+              checkpoint: 'poi_preload_completed',
+              poi_loaded: !!(courseWithPoi?.poi && courseWithPoi.poi.length > 0),
+              timestamp: new Date().toISOString()
+            });
+          }
         } catch (poiError) {
           console.warn("Failed to pre-load POI data:", poiError);
+          
+          // Analytics: Track POI preload error (non-critical)
+          if (posthog && user) {
+            posthog.capture('round_start_checkpoint', {
+              profile_id: user.id,
+              course_id: selectedCourse.id,
+              checkpoint: 'poi_preload_failed',
+              error_message: poiError.message,
+              timestamp: new Date().toISOString()
+            });
+          }
           // Continue without POI data - non-critical
         }
+      }
+      
+      // Analytics: Track data preparation completion
+      if (posthog && user) {
+        posthog.capture('round_start_checkpoint', {
+          profile_id: user.id,
+          course_id: selectedCourse.id,
+          checkpoint: 'data_preparation_completed',
+          timestamp: new Date().toISOString()
+        });
       }
       
       // Store the selected course and tee in AsyncStorage
@@ -338,14 +716,56 @@ export default function CourseSelectorScreen({ navigation }) {
         poi: courseWithPoi.poi || [] // Include POI data if available
       }));
       
+      // Analytics: Track successful round start
+      const roundStartDuration = roundStartInitiationRef.current ? 
+        Date.now() - roundStartInitiationRef.current : null;
+      
+      if (posthog && user) {
+        posthog.capture('round_start_success', {
+          profile_id: user.id,
+          course_id: selectedCourse.id,
+          course_name: selectedCourse.name,
+          club_name: selectedCourse.club_name,
+          location: selectedCourse.location,
+          tee_id: selectedTeeId,
+          tee_name: selectedTee.name,
+          tee_color: selectedTee.color,
+          tee_distance: selectedTee.total_distance,
+          course_rating: selectedTee.course_rating_men,
+          slope_rating: selectedTee.slope_men,
+          has_poi_data: !!(courseWithPoi.poi && courseWithPoi.poi.length > 0),
+          poi_count: courseWithPoi.poi ? courseWithPoi.poi.length : 0,
+          start_duration_ms: roundStartDuration,
+          was_searching: searchQuery.trim().length > 0,
+          search_query: searchQuery.trim() || null,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
       // Navigate directly to the tracker screen with replace
       // This removes the course selector from the back stack for a cleaner navigation flow
       navigation.replace("Tracker");
     } catch (error) {
       console.error("Error starting round:", error);
       Alert.alert("Error", "There was a problem starting your round. Please try again.");
+      
+      // Analytics: Track round start error
+      const roundStartDuration = roundStartInitiationRef.current ? 
+        Date.now() - roundStartInitiationRef.current : null;
+      
+      if (posthog && user) {
+        posthog.capture('round_start_error', {
+          profile_id: user.id,
+          course_id: selectedCourse?.id,
+          tee_id: selectedTeeId,
+          error_type: 'general_start_error',
+          error_message: error.message,
+          start_duration_ms: roundStartDuration,
+          timestamp: new Date().toISOString()
+        });
+      }
     }
-  };
+  }, [selectedCourse, selectedTeeId, searchQuery, navigation, posthog, user]);
   
   /**
    * Render a course item in the list

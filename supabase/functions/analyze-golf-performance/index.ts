@@ -481,7 +481,7 @@ Create one summary card and four premium feature cards. For the premium feature 
     
     // Create a simple request to Claude
     const requestData = {
-      model: "claude-3-7-sonnet-20250219",
+      model: "claude-sonnet-4-20250514",
       max_tokens: maxTokens, // Adjusted based on product permission
       messages: [
         {
