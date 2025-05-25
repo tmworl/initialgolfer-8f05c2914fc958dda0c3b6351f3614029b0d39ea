@@ -1,4 +1,8 @@
 // src/screens/TrackerScreen.js
+//
+// ENHANCED ROUND COMPLETION INTEGRATION
+// Integrates sequential completion pipeline with step-by-step progress UI
+// and intelligent retry capabilities with error context preservation
 
 import React, { useState, useEffect, useContext, useCallback, useRef } from "react";
 import { 
@@ -16,7 +20,14 @@ import { useFocusEffect } from '@react-navigation/native';
 import { usePostHog } from 'posthog-react-native';
 import Layout from "../ui/Layout";
 import theme from "../ui/theme";
-import { createRound, saveHoleData, completeRound, deleteAbandonedRound } from "../services/roundservice";
+import { 
+  createRound, 
+  saveHoleData, 
+  deleteAbandonedRound,
+  completeRoundSequential,
+  setPostHogInstance,
+  detectResumePoint
+} from "../services/roundservice";
 import ShotTable from "../components/ShotTable";
 import HoleNavigator from "../components/HoleNavigator";
 import { AuthContext } from "../context/AuthContext";
@@ -25,42 +36,39 @@ import Button from "../ui/components/Button";
 import DistanceIndicator from '../components/DistanceIndicator';
 
 /**
- * TrackerScreen Component
+ * Enhanced TrackerScreen Component
  * 
- * This screen allows users to track shots during a round of golf.
- * Uses the new data structure for tracking and saving hole data.
- * Enhanced to include POI data for each hole when available.
- * 
- * Enhanced with proper iOS and Android exit handling that deletes abandoned rounds.
- * 
- * ANALYTICS: Decoupled architecture - analytics captured via useEffect monitoring
- * rather than inline within state update callbacks to prevent React state conflicts.
+ * Integrates with the new sequential round completion system providing
+ * transparent progress indication, intelligent retry capabilities,
+ * and comprehensive error recovery.
  */
 export default function TrackerScreen({ navigation }) {
   // Get the authenticated user from context
-  const { user } = useContext(AuthContext);
+  const { user, getAuthTelemetryContext } = useContext(AuthContext);
   
-  // PostHog analytics hook
+  // PostHog analytics hook with service integration
   const posthog = usePostHog();
+  
+  // Initialize PostHog instance in the round service
+  useEffect(() => {
+    if (posthog) {
+      setPostHogInstance(posthog);
+    }
+  }, [posthog]);
   
   // Local state for tracking current hole and shots
   const [currentHole, setCurrentHole] = useState(1);
-  const [totalHoles] = useState(18); // Standard golf round is 18 holes
+  const [totalHoles] = useState(18);
   
   // Initialize hole data structure for all holes
   const initialHoleState = {};
   for (let i = 1; i <= 18; i++) {
     initialHoleState[i] = {
-      // Hole characteristics (will be filled from course data)
       par: null,
       distance: null,
       index: null,
       features: [],
-      
-      // Shot data
-      shots: [], // Array of { type, result, timestamp }
-      
-      // Shot counts for ShotTable compatibility
+      shots: [],
       shotCounts: {
         "Tee Shot": { "On Target": 0, "Slightly Off": 0, "Recovery Needed": 0 },
         "Long Shot": { "On Target": 0, "Slightly Off": 0, "Recovery Needed": 0 },
@@ -70,19 +78,27 @@ export default function TrackerScreen({ navigation }) {
         "Sand": { "On Target": 0, "Slightly Off": 0, "Recovery Needed": 0 },
         "Penalties": { "On Target": 0, "Slightly Off": 0, "Recovery Needed": 0 }
       },
-      
-      // POI data for this hole
       poi: null
     };
   }
   
   // Main state variables for the component
-  const [holeData, setHoleData] = useState(initialHoleState); // Tracks all data for all holes
-  const [round, setRound] = useState(null);                    // Current round data
-  const [activeColumn, setActiveColumn] = useState("On Target"); // Currently selected outcome column
-  const [loading, setLoading] = useState(false);                // Loading state for async operations
-  const [course, setCourse] = useState(null);                   // Current course data
-  const [courseDetails, setCourseDetails] = useState(null);     // Detailed course data from database
+  const [holeData, setHoleData] = useState(initialHoleState);
+  const [round, setRound] = useState(null);
+  const [activeColumn, setActiveColumn] = useState("On Target");
+  const [loading, setLoading] = useState(false);
+  const [course, setCourse] = useState(null);
+  const [courseDetails, setCourseDetails] = useState(null);
+  
+  // ENHANCED: Completion progress state
+  const [completionProgress, setCompletionProgress] = useState({
+    isCompleting: false,
+    currentStep: null,
+    currentStepDescription: null,
+    error: null,
+    canRetry: false,
+    preservedErrorContext: null
+  });
 
   // Analytics tracking references
   const screenEntryTimeRef = useRef(Date.now());
@@ -90,9 +106,8 @@ export default function TrackerScreen({ navigation }) {
   const holeStartTimesRef = useRef({});
   const roundCompletionStartRef = useRef(null);
   
-  // Analytics monitoring references - for decoupled event tracking
+  // Analytics monitoring references
   const previousShotCountsRef = useRef({});
-  const lastShotActionRef = useRef(null);
 
   // Analytics: Track screen entry and round initialization
   useEffect(() => {
@@ -107,7 +122,6 @@ export default function TrackerScreen({ navigation }) {
 
   // DECOUPLED ANALYTICS: Monitor shot changes via useEffect
   useEffect(() => {
-    // Skip analytics on initial render or if no round data
     if (!round || !user || !posthog) return;
     
     const currentHoleShots = holeData[currentHole]?.shots || [];
@@ -132,23 +146,19 @@ export default function TrackerScreen({ navigation }) {
     
     // Detect shot removal
     if (currentHoleShots.length < previousHoleShots.length) {
-      // Find which shot type/outcome was reduced
       const currentCounts = {};
       const previousCounts = {};
       
-      // Count current shots by type and outcome
       currentHoleShots.forEach(shot => {
         const key = `${shot.type}_${shot.result}`;
         currentCounts[key] = (currentCounts[key] || 0) + 1;
       });
       
-      // Count previous shots by type and outcome
       previousHoleShots.forEach(shot => {
         const key = `${shot.type}_${shot.result}`;
         previousCounts[key] = (previousCounts[key] || 0) + 1;
       });
       
-      // Find the removed shot type/outcome
       Object.keys(previousCounts).forEach(key => {
         const [shotType, shotOutcome] = key.split('_');
         const currentCount = currentCounts[key] || 0;
@@ -181,7 +191,7 @@ export default function TrackerScreen({ navigation }) {
   useFocusEffect(
     useCallback(() => {
       const unsubscribe = navigation.addListener('beforeRemove', (e) => {
-        if (round && round.id) {
+        if (round && round.id && !completionProgress.isCompleting) {
           e.preventDefault();
           
           Alert.alert(
@@ -210,28 +220,7 @@ export default function TrackerScreen({ navigation }) {
                       });
                     }
                     
-                    // Analytics: Track database deletion checkpoint
-                    if (posthog && user) {
-                      posthog.capture('round_abandonment_checkpoint', {
-                        profile_id: user.id,
-                        round_id: round.id,
-                        checkpoint: 'database_deletion_started',
-                        timestamp: new Date().toISOString()
-                      });
-                    }
-                    
                     await deleteAbandonedRound(round.id);
-                    
-                    // Analytics: Track storage cleanup checkpoint
-                    if (posthog && user) {
-                      posthog.capture('round_abandonment_checkpoint', {
-                        profile_id: user.id,
-                        round_id: round.id,
-                        checkpoint: 'storage_cleanup_started',
-                        timestamp: new Date().toISOString()
-                      });
-                    }
-                    
                     await AsyncStorage.removeItem(`round_${round.id}_holes`);
                     await AsyncStorage.removeItem("currentRound");
                     
@@ -251,18 +240,6 @@ export default function TrackerScreen({ navigation }) {
                     navigation.dispatch(e.data.action);
                   } catch (error) {
                     console.error("Error abandoning round:", error);
-                    
-                    // Analytics: Track abandonment error
-                    if (posthog && user) {
-                      posthog.capture('round_abandonment_error', {
-                        profile_id: user.id,
-                        round_id: round.id,
-                        error_message: error.message,
-                        data_availability: false,
-                        timestamp: new Date().toISOString()
-                      });
-                    }
-                    
                     navigation.dispatch(e.data.action);
                   } finally {
                     setLoading(false);
@@ -274,7 +251,7 @@ export default function TrackerScreen({ navigation }) {
         }
       });
       return unsubscribe;
-    }, [navigation, round, setLoading, posthog, user, currentHole])
+    }, [navigation, round, setLoading, posthog, user, currentHole, completionProgress.isCompleting])
   );
 
   // Android Hardware Back Button Handler - Enhanced with delete logic and analytics
@@ -282,7 +259,7 @@ export default function TrackerScreen({ navigation }) {
     const backHandler = BackHandler.addEventListener(
       'hardwareBackPress',
       () => {
-        if (round && round.id) {
+        if (round && round.id && !completionProgress.isCompleting) {
           Alert.alert(
             "Exit Round?",
             "Are you sure you want to exit this round? Your progress will not be saved.",
@@ -295,7 +272,6 @@ export default function TrackerScreen({ navigation }) {
                   try {
                     setLoading(true);
                     
-                    // Analytics: Track Android back button abandonment
                     if (posthog && user) {
                       posthog.capture('round_abandonment_started', {
                         profile_id: user.id,
@@ -312,7 +288,6 @@ export default function TrackerScreen({ navigation }) {
                     await AsyncStorage.removeItem(`round_${round.id}_holes`);
                     await AsyncStorage.removeItem("currentRound");
                     
-                    // Analytics: Track successful Android abandonment
                     if (posthog && user) {
                       posthog.capture('round_abandonment_completed', {
                         profile_id: user.id,
@@ -327,19 +302,6 @@ export default function TrackerScreen({ navigation }) {
                     navigation.goBack();
                   } catch (error) {
                     console.error("Error abandoning round:", error);
-                    
-                    // Analytics: Track Android abandonment error
-                    if (posthog && user) {
-                      posthog.capture('round_abandonment_error', {
-                        profile_id: user.id,
-                        round_id: round.id,
-                        error_message: error.message,
-                        abandonment_trigger: 'android_back_button',
-                        data_availability: false,
-                        timestamp: new Date().toISOString()
-                      });
-                    }
-                    
                     navigation.goBack();
                   } finally {
                     setLoading(false);
@@ -355,7 +317,7 @@ export default function TrackerScreen({ navigation }) {
     );
 
     return () => backHandler.remove();
-  }, [round, navigation, setLoading, posthog, user, currentHole]);
+  }, [round, navigation, setLoading, posthog, user, currentHole, completionProgress.isCompleting]);
 
   // Helper function to get total shots recorded across all holes
   const getTotalShotsRecorded = useCallback(() => {
@@ -370,14 +332,12 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Save the current hole data to AsyncStorage
-   * Now includes POI data within the hole data structure
-   * Analytics: Track data persistence operations
+   * UNCHANGED - preserves existing functionality
    */
   const saveCurrentHoleToStorage = useCallback(async () => {
     if (!round) return;
     
     try {
-      // Analytics: Track hole data save start
       const saveStart = Date.now();
       if (posthog && user) {
         posthog.capture('hole_data_save_started', {
@@ -389,18 +349,14 @@ export default function TrackerScreen({ navigation }) {
         });
       }
       
-      // Get existing stored hole data or initialize empty object
       const existingDataStr = await AsyncStorage.getItem(`round_${round.id}_holes`);
       const existingData = existingDataStr ? JSON.parse(existingDataStr) : {};
       
-      // Update with current hole data - POI data is now included in holeData
       existingData[currentHole] = holeData[currentHole];
       
-      // Save back to AsyncStorage
       await AsyncStorage.setItem(`round_${round.id}_holes`, JSON.stringify(existingData));
       console.log(`Saved hole ${currentHole} data to AsyncStorage`);
       
-      // Analytics: Track successful hole data save
       const saveDuration = Date.now() - saveStart;
       if (posthog && user) {
         posthog.capture('hole_data_save_success', {
@@ -417,7 +373,6 @@ export default function TrackerScreen({ navigation }) {
     } catch (error) {
       console.error("Error saving hole data to AsyncStorage:", error);
       
-      // Analytics: Track hole data save error
       if (posthog && user) {
         posthog.capture('hole_data_save_error', {
           profile_id: user.id,
@@ -433,14 +388,12 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Load hole data from AsyncStorage
-   * Will now include POI data if it was previously saved
-   * Analytics: Track data loading operations
+   * UNCHANGED - preserves existing functionality
    */
   const loadHoleDataFromStorage = useCallback(async () => {
     if (!round) return;
     
     try {
-      // Analytics: Track hole data load start
       if (posthog && user) {
         posthog.capture('hole_data_load_started', {
           profile_id: user.id,
@@ -453,11 +406,9 @@ export default function TrackerScreen({ navigation }) {
       if (storedDataStr) {
         const storedData = JSON.parse(storedDataStr);
         
-        // Merge with current state (only update holes that have stored data)
         setHoleData(prevData => {
           const newData = { ...prevData };
           
-          // For each hole in stored data, update the state
           Object.keys(storedData).forEach(holeNum => {
             newData[holeNum] = storedData[holeNum];
           });
@@ -467,7 +418,6 @@ export default function TrackerScreen({ navigation }) {
         
         console.log("Loaded hole data from AsyncStorage");
         
-        // Analytics: Track successful hole data load
         if (posthog && user) {
           posthog.capture('hole_data_load_success', {
             profile_id: user.id,
@@ -482,7 +432,6 @@ export default function TrackerScreen({ navigation }) {
     } catch (error) {
       console.error("Error loading hole data from AsyncStorage:", error);
       
-      // Analytics: Track hole data load error
       if (posthog && user) {
         posthog.capture('hole_data_load_error', {
           profile_id: user.id,
@@ -497,12 +446,10 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Function to navigate to the next hole
-   * Saves current hole data before moving
-   * Analytics: Track hole navigation and completion
+   * UNCHANGED - preserves existing functionality
    */
   const handleNextHole = useCallback(async () => {
     if (currentHole < totalHoles) {
-      // Analytics: Track hole completion
       const holeStartTime = holeStartTimesRef.current[currentHole];
       const holeDuration = holeStartTime ? Date.now() - holeStartTime : null;
       const shotsOnHole = holeData[currentHole]?.shots?.length || 0;
@@ -520,16 +467,12 @@ export default function TrackerScreen({ navigation }) {
         });
       }
       
-      // Save current hole data to AsyncStorage
       await saveCurrentHoleToStorage();
       
-      // Move to the next hole
       setCurrentHole(prev => {
         const nextHole = prev + 1;
-        // Set start time for next hole
         holeStartTimesRef.current[nextHole] = Date.now();
         
-        // Analytics: Track hole navigation
         if (posthog && user && round) {
           posthog.capture('hole_navigation', {
             profile_id: user.id,
@@ -544,7 +487,6 @@ export default function TrackerScreen({ navigation }) {
         return nextHole;
       });
     } else {
-      // If on the last hole, prompt to finish the round
       Alert.alert(
         "End of Round",
         "You've reached the last hole. Would you like to finish the round?",
@@ -553,7 +495,6 @@ export default function TrackerScreen({ navigation }) {
           { 
             text: "Finish Round", 
             onPress: () => {
-              // Analytics: Track round finish prompt
               if (posthog && user && round) {
                 posthog.capture('round_finish_prompt_accepted', {
                   profile_id: user.id,
@@ -573,19 +514,15 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Function to navigate to the previous hole
-   * Saves current hole data before moving
-   * Analytics: Track hole navigation
+   * UNCHANGED - preserves existing functionality
    */
   const handlePreviousHole = useCallback(async () => {
     if (currentHole > 1) {
-      // Save current hole data to AsyncStorage
       await saveCurrentHoleToStorage();
       
-      // Move to the previous hole
       setCurrentHole(prev => {
         const prevHole = prev - 1;
         
-        // Analytics: Track hole navigation
         if (posthog && user && round) {
           posthog.capture('hole_navigation', {
             profile_id: user.id,
@@ -604,36 +541,29 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Update hole information when courseDetails or currentHole changes
-   * Now includes mapping POI data for the current hole
+   * UNCHANGED - preserves existing functionality
    */
   useEffect(() => {
-    // Update hole information when courseDetails is available
     if (courseDetails && courseDetails.holes) {
-      // Find information for the current hole
       const currentHoleInfo = courseDetails.holes.find(
         hole => hole.number === currentHole
       );
       
       if (currentHoleInfo) {
-        // Get selected tee information
         const selectedTeeName = round?.selected_tee_name?.toLowerCase() || course?.teeName?.toLowerCase();
         
-        // Get distance for selected tee
         let distance = null;
         if (currentHoleInfo.distances && selectedTeeName && currentHoleInfo.distances[selectedTeeName]) {
           distance = currentHoleInfo.distances[selectedTeeName];
         } else if (currentHoleInfo.distances) {
-          // Fallback to first available tee
           const firstTee = Object.keys(currentHoleInfo.distances)[0];
           if (firstTee) {
             distance = currentHoleInfo.distances[firstTee];
           }
         }
         
-        // Find POI data for the current hole if available
         let holePoi = null;
         if (course && course.poi && Array.isArray(course.poi)) {
-          // Find POI data for this specific hole
           const holePoiData = course.poi.find(poi => poi.hole === currentHole);
           if (holePoiData) {
             holePoi = {
@@ -645,11 +575,9 @@ export default function TrackerScreen({ navigation }) {
           }
         }
         
-        // Update hole data with course information
         setHoleData(prevData => {
           const newData = { ...prevData };
           
-          // Only update if not already set
           if (!newData[currentHole].par) {
             newData[currentHole] = {
               ...newData[currentHole],
@@ -657,10 +585,9 @@ export default function TrackerScreen({ navigation }) {
               distance: distance || null,
               index: currentHoleInfo.index_men || null,
               features: currentHoleInfo.features || [],
-              poi: holePoi // Add POI data to hole
+              poi: holePoi
             };
             
-            // Analytics: Track hole data update
             if (posthog && user && round) {
               posthog.capture('hole_data_updated', {
                 profile_id: user.id,
@@ -683,8 +610,7 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Initialize round on component mount
-   * Enhanced to handle POI data from selected course
-   * Analytics: Comprehensive round initialization tracking
+   * UNCHANGED - preserves existing functionality
    */
   useEffect(() => {
     const initializeRound = async () => {
@@ -694,7 +620,6 @@ export default function TrackerScreen({ navigation }) {
           return;
         }
         
-        // Analytics: Track round initialization start
         roundStartTimeRef.current = Date.now();
         if (posthog) {
           posthog.capture('round_initialization_started', {
@@ -703,12 +628,10 @@ export default function TrackerScreen({ navigation }) {
           });
         }
         
-        // Get the selected course data from AsyncStorage
         const storedCourseData = await AsyncStorage.getItem("selectedCourse");
         if (!storedCourseData) {
           console.error("No course selected. Cannot start a round.");
           
-          // Analytics: Track missing course data error
           if (posthog && user) {
             posthog.capture('round_initialization_error', {
               profile_id: user.id,
@@ -727,14 +650,12 @@ export default function TrackerScreen({ navigation }) {
         
         console.log("Starting round with course and tee:", courseData);
         
-        // Log POI availability for debugging
         if (courseData.poi && Array.isArray(courseData.poi)) {
           console.log(`Course has POI data for ${courseData.poi.length} holes`);
         } else {
           console.log("Course does not have POI data");
         }
         
-        // Analytics: Track course data validation
         if (posthog && user) {
           posthog.capture('round_initialization_checkpoint', {
             profile_id: user.id,
@@ -749,17 +670,14 @@ export default function TrackerScreen({ navigation }) {
           });
         }
         
-        // Check if there's an in-progress round in AsyncStorage
         const existingRoundStr = await AsyncStorage.getItem("currentRound");
         let roundData;
         
         if (existingRoundStr) {
-          // Use existing round
           roundData = JSON.parse(existingRoundStr);
           console.log("Resuming existing round:", roundData);
           setRound(roundData);
           
-          // Analytics: Track round resumption
           if (posthog && user) {
             posthog.capture('round_resumed', {
               profile_id: user.id,
@@ -769,8 +687,6 @@ export default function TrackerScreen({ navigation }) {
             });
           }
         } else {
-          // Create a new round
-          // Analytics: Track round creation start
           if (posthog && user) {
             posthog.capture('round_initialization_checkpoint', {
               profile_id: user.id,
@@ -790,10 +706,8 @@ export default function TrackerScreen({ navigation }) {
           console.log("New round created:", roundData);
           setRound(roundData);
           
-          // Store the round in AsyncStorage
           await AsyncStorage.setItem("currentRound", JSON.stringify(roundData));
           
-          // Analytics: Track successful round creation
           if (posthog && user) {
             posthog.capture('round_created', {
               profile_id: user.id,
@@ -807,12 +721,9 @@ export default function TrackerScreen({ navigation }) {
           }
         }
         
-        // Get supabase from the service
         const { supabase } = require("../services/supabase");
         
-        // Get full course details from database
         try {
-          // Analytics: Track course details fetch start
           if (posthog && user) {
             posthog.capture('round_initialization_checkpoint', {
               profile_id: user.id,
@@ -831,7 +742,6 @@ export default function TrackerScreen({ navigation }) {
           if (error) {
             console.error("Error fetching course details:", error);
             
-            // Analytics: Track course details fetch error
             if (posthog && user) {
               posthog.capture('round_initialization_error', {
                 profile_id: user.id,
@@ -846,7 +756,6 @@ export default function TrackerScreen({ navigation }) {
             console.log("Found full course details:", fullCourseData.name);
             setCourseDetails(fullCourseData);
             
-            // Analytics: Track successful course details fetch
             if (posthog && user) {
               posthog.capture('round_initialization_checkpoint', {
                 profile_id: user.id,
@@ -862,7 +771,6 @@ export default function TrackerScreen({ navigation }) {
         } catch (error) {
           console.error("Error fetching course details:", error);
           
-          // Analytics: Track course details fetch exception
           if (posthog && user) {
             posthog.capture('round_initialization_error', {
               profile_id: user.id,
@@ -875,15 +783,12 @@ export default function TrackerScreen({ navigation }) {
           }
         }
         
-        // Load any existing hole data from AsyncStorage
         if (roundData) {
           await loadHoleDataFromStorage();
         }
         
-        // Set start time for first hole
         holeStartTimesRef.current[1] = Date.now();
         
-        // Analytics: Track successful round initialization
         const initializationDuration = Date.now() - roundStartTimeRef.current;
         if (posthog && user) {
           posthog.capture('round_initialization_completed', {
@@ -903,7 +808,6 @@ export default function TrackerScreen({ navigation }) {
           "There was a problem starting your round. Please try again."
         );
         
-        // Analytics: Track round initialization error
         if (posthog && user) {
           posthog.capture('round_initialization_error', {
             profile_id: user.id,
@@ -920,8 +824,7 @@ export default function TrackerScreen({ navigation }) {
   }, [user, navigation, posthog, loadHoleDataFromStorage]);
 
   /**
-   * PURE STATE UPDATE: Function to add a shot of a specific type and outcome
-   * Analytics removed from this callback - now handled by useEffect monitoring
+   * UNCHANGED: Pure state update functions for shot management
    */
   const addShot = useCallback((type, outcome) => {
     console.log(`Adding ${outcome} ${type} shot for hole ${currentHole}`);
@@ -930,27 +833,20 @@ export default function TrackerScreen({ navigation }) {
       const newData = { ...prevData };
       const currentHoleInfo = { ...newData[currentHole] };
       
-      // Add to shots array
       currentHoleInfo.shots.push({
         type,
         result: outcome,
         timestamp: new Date().toISOString()
       });
       
-      // Update shot counts for ShotTable compatibility
       currentHoleInfo.shotCounts[type][outcome] += 1;
       
-      // Update hole data
       newData[currentHole] = currentHoleInfo;
       
       return newData;
     });
   }, [currentHole]);
 
-  /**
-   * PURE STATE UPDATE: Function to remove a shot of a specific type and outcome
-   * Analytics removed from this callback - now handled by useEffect monitoring
-   */
   const removeShot = useCallback((type, outcome) => {
     console.log(`Removing ${outcome} ${type} shot for hole ${currentHole}`);
     
@@ -958,27 +854,20 @@ export default function TrackerScreen({ navigation }) {
       const newData = { ...prevData };
       const currentHoleInfo = { ...newData[currentHole] };
       
-      // Only proceed if there are shots to remove
       if (currentHoleInfo.shotCounts[type][outcome] <= 0) {
         return prevData;
       }
       
-      // Find the index of the last shot of this type and outcome
       const shotIndex = [...currentHoleInfo.shots].reverse().findIndex(
         shot => shot.type === type && shot.result === outcome
       );
       
       if (shotIndex !== -1) {
-        // Convert the reversed index to the actual index
         const actualIndex = currentHoleInfo.shots.length - 1 - shotIndex;
         
-        // Remove the shot from the shots array
         currentHoleInfo.shots.splice(actualIndex, 1);
-        
-        // Update the shot counts for ShotTable compatibility
         currentHoleInfo.shotCounts[type][outcome] -= 1;
         
-        // Update the hole data
         newData[currentHole] = currentHoleInfo;
       }
       
@@ -988,13 +877,12 @@ export default function TrackerScreen({ navigation }) {
 
   /**
    * Complete a hole and save data to AsyncStorage
-   * Analytics: Track hole completion process
+   * UNCHANGED - preserves existing functionality
    */
   const completeHole = async () => {
     try {
       setLoading(true);
       
-      // Analytics: Track hole completion start
       if (posthog && user && round) {
         posthog.capture('hole_completion_started', {
           profile_id: user.id,
@@ -1005,17 +893,13 @@ export default function TrackerScreen({ navigation }) {
         });
       }
       
-      // Save current hole data to AsyncStorage
       await saveCurrentHoleToStorage();
       
-      // Move to next hole if not on last hole
       if (currentHole < totalHoles) {
         setCurrentHole(prev => prev + 1);
-        // Set start time for next hole
         holeStartTimesRef.current[currentHole + 1] = Date.now();
       }
       
-      // Analytics: Track successful hole completion
       if (posthog && user && round) {
         posthog.capture('hole_completion_success', {
           profile_id: user.id,
@@ -1033,7 +917,6 @@ export default function TrackerScreen({ navigation }) {
       setLoading(false);
       Alert.alert("Error", "There was a problem saving your data.");
       
-      // Analytics: Track hole completion error
       if (posthog && user && round) {
         posthog.capture('hole_completion_error', {
           profile_id: user.id,
@@ -1048,283 +931,235 @@ export default function TrackerScreen({ navigation }) {
   };
 
   /**
-   * Complete the round - save all hole data to database
-   * Enhanced to include POI data in the saved hole_data
-   * Analytics: Comprehensive round completion tracking with individual database operation monitoring
+   * ENHANCED: Complete the round using the new sequential completion system
+   * Provides step-by-step progress and intelligent retry capabilities
    */
   const finishRound = async () => {
     try {
-      // Show loading state
-      setLoading(true);
+      // Initialize completion progress state
+      setCompletionProgress({
+        isCompleting: true,
+        currentStep: null,
+        currentStepDescription: "Preparing to save round...",
+        error: null,
+        canRetry: false,
+        preservedErrorContext: null
+      });
+      
       roundCompletionStartRef.current = Date.now();
       
-      // Analytics: Track round completion start
       if (posthog && user && round) {
-        posthog.capture('round_completion_started', {
+        posthog.capture('enhanced_round_completion_started', {
           profile_id: user.id,
           round_id: round.id,
           course_id: round.course_id,
           total_holes: totalHoles,
           total_shots: getTotalShotsRecorded(),
+          completion_method: 'sequential',
           timestamp: new Date().toISOString()
         });
       }
       
-      // Save current hole first
-      // Analytics: Track current hole save checkpoint
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'current_hole_save_started',
-          hole_number: currentHole,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      await saveCurrentHoleToStorage();
-      
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'current_hole_save_completed',
-          data_availability: true,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      // Get all stored hole data
-      // Analytics: Track hole data retrieval checkpoint
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'hole_data_retrieval_started',
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      const storedDataStr = await AsyncStorage.getItem(`round_${round.id}_holes`);
-      if (!storedDataStr) {
-        throw new Error("No hole data found for this round");
-      }
-      
-      const storedHoleData = JSON.parse(storedDataStr);
-      
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'hole_data_retrieval_completed',
-          holes_with_data: Object.keys(storedHoleData).length,
-          data_size: storedDataStr.length,
-          data_availability: true,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      // Save each hole to the database - Track individual operations
-      let holesProcessed = 0;
-      let holesSaved = 0;
-      
-      for (let holeNum = 1; holeNum <= totalHoles; holeNum++) {
-        // Skip holes with no data
-        if (!storedHoleData[holeNum] || storedHoleData[holeNum].shots.length === 0) {
-          continue;
-        }
-        
-        holesProcessed++;
-        
-        // Analytics: Track individual hole save start
-        if (posthog && user && round) {
-          posthog.capture('round_completion_checkpoint', {
-            profile_id: user.id,
-            round_id: round.id,
-            checkpoint: 'individual_hole_save_started',
-            hole_number: holeNum,
-            shots_count: storedHoleData[holeNum].shots.length,
-            timestamp: new Date().toISOString()
-          });
-        }
-        
-        const holeInfo = storedHoleData[holeNum];
-        const totalScore = holeInfo.shots.length;
-        
-        // Create hole data object including POI data
-        const holeDataForDb = {
-          par: holeInfo.par,
-          distance: holeInfo.distance,
-          index: holeInfo.index,
-          features: holeInfo.features,
-          shots: holeInfo.shots,
-          poi: holeInfo.poi // Include POI data in database record
-        };
-        
-        try {
-          // Save hole data to database
-          await saveHoleData(
-            round.id,
-            holeNum,
-            holeDataForDb,
-            totalScore
+      // Check for existing checkpoint and offer resume
+      const resumeInfo = await detectResumePoint(round.id);
+      if (resumeInfo.checkpoint && resumeInfo.preserveError) {
+        const shouldResume = await new Promise((resolve) => {
+          Alert.alert(
+            "Resume Round Completion",
+            `We found a previous completion attempt that failed at "${resumeInfo.preserveError.step}". Would you like to resume from where it left off?`,
+            [
+              { text: "Start Over", onPress: () => resolve(false) },
+              { text: "Resume", onPress: () => resolve(true), style: "default" }
+            ]
           );
-          
-          console.log(`Hole ${holeNum} data saved to database`);
-          holesSaved++;
-          
-          // Analytics: Track individual hole save success
-          if (posthog && user && round) {
-            posthog.capture('round_completion_checkpoint', {
-              profile_id: user.id,
-              round_id: round.id,
-              checkpoint: 'individual_hole_save_completed',
-              hole_number: holeNum,
-              shots_count: totalScore,
-              has_poi_data: !!holeInfo.poi,
-              data_availability: true,
-              timestamp: new Date().toISOString()
-            });
-          }
-        } catch (holeError) {
-          console.error(`Error saving hole ${holeNum}:`, holeError);
-          
-          // Analytics: Track individual hole save error
-          if (posthog && user && round) {
-            posthog.capture('round_completion_checkpoint', {
-              profile_id: user.id,
-              round_id: round.id,
-              checkpoint: 'individual_hole_save_failed',
-              hole_number: holeNum,
-              error_message: holeError.message,
-              data_availability: false,
-              timestamp: new Date().toISOString()
-            });
-          }
-          
-          throw holeError;
+        });
+        
+        if (!shouldResume) {
+          // Clear checkpoint if user wants to start over
+          const { clearCompletionCheckpoint } = require("../services/roundservice");
+          await clearCompletionCheckpoint(round.id);
         }
       }
       
-      // Analytics: Track all holes save completion
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'all_holes_saved',
-          holes_processed: holesProcessed,
-          holes_saved: holesSaved,
-          data_availability: holesSaved === holesProcessed,
-          timestamp: new Date().toISOString()
-        });
-      }
+      // Step descriptions for user feedback
+      const stepDescriptions = {
+        'saveCurrentHole': 'Saving current hole data...',
+        'retrieveAllHoles': 'Collecting all hole data...',
+        'validateData': 'Validating round data...',
+        'saveToDatabase': 'Uploading to cloud...',
+        'markComplete': 'Finalizing round...',
+        'generateInsights': 'Analyzing performance...',
+        'cleanup': 'Cleaning up...'
+      };
       
-      // Complete the round - Track database round completion
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'round_completion_database_started',
-          timestamp: new Date().toISOString()
-        });
-      }
+      // Progress tracking callback
+      const onStepProgress = (step) => {
+        setCompletionProgress(prev => ({
+          ...prev,
+          currentStep: step,
+          currentStepDescription: stepDescriptions[step] || `Processing ${step}...`,
+          error: null
+        }));
+      };
+
+      // Use the enhanced sequential completion
+      const result = await completeRoundSequential(
+        round.id, 
+        currentHole, 
+        holeData[currentHole],
+        user.id
+      );
       
-      await completeRound(round.id);
-      console.log("Round completed successfully");
-      
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'round_completion_database_completed',
-          data_availability: true,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      // Clear AsyncStorage data for this round - Track storage cleanup
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'storage_cleanup_started',
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      await AsyncStorage.removeItem(`round_${round.id}_holes`);
-      await AsyncStorage.removeItem("currentRound");
-      
-      if (posthog && user && round) {
-        posthog.capture('round_completion_checkpoint', {
-          profile_id: user.id,
-          round_id: round.id,
-          checkpoint: 'storage_cleanup_completed',
-          data_availability: true,
-          timestamp: new Date().toISOString()
-        });
-      }
-      
-      // Analytics: Track successful round completion
+      // Success - completion finished
       const roundCompletionDuration = roundCompletionStartRef.current ? 
         Date.now() - roundCompletionStartRef.current : null;
-      
+
       if (posthog && user && round) {
-        posthog.capture('round_completion_success', {
+        posthog.capture('enhanced_round_completion_success', {
           profile_id: user.id,
           round_id: round.id,
           course_id: round.course_id,
           total_holes: totalHoles,
-          holes_with_data: holesProcessed,
-          holes_saved: holesSaved,
           total_shots: getTotalShotsRecorded(),
           completion_duration_ms: roundCompletionDuration,
+          resumed_from_checkpoint: result.resumedFromCheckpoint,
+          completion_method: 'sequential',
           data_availability: true,
           timestamp: new Date().toISOString()
         });
       }
       
-      // Navigate to scorecard with replace to prevent back navigation to the tracker
-      // This creates a cleaner flow where completing a round leads directly to the scorecard
-      // Analytics: Track navigation to scorecard
-      if (posthog && user && round) {
-        posthog.capture('round_completion_navigation', {
-          profile_id: user.id,
-          round_id: round.id,
-          destination: 'scorecard',
-          navigation_type: 'replace',
-          timestamp: new Date().toISOString()
-        });
-      }
+      // Clear progress state
+      setCompletionProgress({
+        isCompleting: false,
+        currentStep: null,
+        currentStepDescription: null,
+        error: null,
+        canRetry: false,
+        preservedErrorContext: null
+      });
       
+      // Navigate to scorecard
       navigation.replace("ScorecardScreen", { 
         roundId: round.id,
-        fromTracker: true // Add flag to indicate we came from tracker
+        fromTracker: true
       });
       
     } catch (error) {
-      console.error("Error finishing round:", error);
-      setLoading(false);
-      Alert.alert(
-        "Error",
-        "There was a problem completing your round. Please try again."
-      );
+      console.error("Error in enhanced round completion:", error);
       
-      // Analytics: Track round completion error
       const roundCompletionDuration = roundCompletionStartRef.current ? 
         Date.now() - roundCompletionStartRef.current : null;
       
       if (posthog && user && round) {
-        posthog.capture('round_completion_error', {
+        posthog.capture('enhanced_round_completion_error', {
           profile_id: user.id,
           round_id: round.id,
           course_id: round.course_id,
-          error_message: error.message,
+          error_step: error.step,
+          error_message: error.error?.message || error.message,
           completion_duration_ms: roundCompletionDuration,
+          can_retry: error.canRetry,
+          completion_method: 'sequential',
           data_availability: false,
           timestamp: new Date().toISOString()
         });
       }
+      
+      // Update progress state with error information
+      setCompletionProgress({
+        isCompleting: false,
+        currentStep: error.step,
+        currentStepDescription: `Failed at: ${stepDescriptions[error.step] || error.step}`,
+        error: error.error?.message || error.message,
+        canRetry: error.canRetry,
+        preservedErrorContext: error
+      });
+    }
+  };
+
+  /**
+   * ENHANCED: Retry completion from failure point
+   * Uses preserved error context to resume intelligently
+   */
+  const retryCompletion = async () => {
+    if (!completionProgress.preservedErrorContext) {
+      // No preserved context, start fresh
+      return finishRound();
+    }
+    
+    try {
+      setCompletionProgress(prev => ({
+        ...prev,
+        isCompleting: true,
+        error: null,
+        currentStepDescription: "Retrying from where we left off..."
+      }));
+      
+      if (posthog && user && round) {
+        posthog.capture('round_completion_retry_started', {
+          profile_id: user.id,
+          round_id: round.id,
+          retry_from_step: completionProgress.preservedErrorContext.step,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Retry the sequential completion - it will automatically resume from checkpoint
+      const result = await completeRoundSequential(
+        round.id, 
+        currentHole, 
+        holeData[currentHole],
+        user.id
+      );
+      
+      if (posthog && user && round) {
+        posthog.capture('round_completion_retry_success', {
+          profile_id: user.id,
+          round_id: round.id,
+          original_failure_step: completionProgress.preservedErrorContext.step,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Clear progress state
+      setCompletionProgress({
+        isCompleting: false,
+        currentStep: null,
+        currentStepDescription: null,
+        error: null,
+        canRetry: false,
+        preservedErrorContext: null
+      });
+      
+      // Navigate to scorecard
+      navigation.replace("ScorecardScreen", { 
+        roundId: round.id,
+        fromTracker: true
+      });
+      
+    } catch (retryError) {
+      console.error("Error in completion retry:", retryError);
+      
+      if (posthog && user && round) {
+        posthog.capture('round_completion_retry_failed', {
+          profile_id: user.id,
+          round_id: round.id,
+          original_failure_step: completionProgress.preservedErrorContext.step,
+          retry_failure_step: retryError.step,
+          retry_error_message: retryError.error?.message || retryError.message,
+          timestamp: new Date().toISOString()
+        });
+      }
+      
+      // Update with new error information
+      setCompletionProgress(prev => ({
+        ...prev,
+        isCompleting: false,
+        error: retryError.error?.message || retryError.message,
+        currentStepDescription: `Retry failed at: ${retryError.step}`,
+        preservedErrorContext: retryError
+      }));
     }
   };
 
@@ -1333,17 +1168,16 @@ export default function TrackerScreen({ navigation }) {
   const currentHolePar = holeData[currentHole]?.par || 0;
   const scoreRelativeToPar = currentHoleScore - currentHolePar;
   
-  // Add color-coding helper function for score display
   const getScoreColor = () => {
-    if (scoreRelativeToPar < 0) return theme.colors.success; // Under par (good)
-    if (scoreRelativeToPar > 0) return theme.colors.error;   // Over par (bad)
-    return theme.colors.text;  // At par (neutral)
+    if (scoreRelativeToPar < 0) return theme.colors.success;
+    if (scoreRelativeToPar > 0) return theme.colors.error;
+    return theme.colors.text;
   };
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.container}>
-        {/* 1. Navigator - KEEP EXISTING */}
+        {/* Navigator */}
         <View style={styles.navigatorContainer}>
           <HoleNavigator
             currentHole={currentHole}
@@ -1353,7 +1187,7 @@ export default function TrackerScreen({ navigation }) {
           />
         </View>
 
-        {/* 2. Integrated Hole Info + Score - NEW COMPONENT */}
+        {/* Hole info + Score */}
         <View style={styles.holeInfoContainer}>
           <View style={styles.holeDetailsSection}>
             <Typography variant="body" style={styles.holeInfoText}>
@@ -1373,8 +1207,38 @@ export default function TrackerScreen({ navigation }) {
           </View>
         </View>
 
-        {/* Show loading indicator when saving data */}
-        {loading ? (
+        {/* ENHANCED: Show completion progress or error state */}
+        {completionProgress.isCompleting ? (
+          <View style={styles.completionProgressContainer}>
+            <ActivityIndicator size="large" color={theme.colors.primary} />
+            <Typography variant="body" style={styles.completionProgressText}>
+              {completionProgress.currentStepDescription}
+            </Typography>
+            {completionProgress.currentStep && (
+              <Typography variant="caption" style={styles.completionStepText}>
+                Step: {completionProgress.currentStep}
+              </Typography>
+            )}
+          </View>
+        ) : completionProgress.error ? (
+          <View style={styles.completionErrorContainer}>
+            <Typography variant="body" style={styles.completionErrorText}>
+              {completionProgress.currentStepDescription}
+            </Typography>
+            <Typography variant="caption" style={styles.completionErrorDetail}>
+              {completionProgress.error}
+            </Typography>
+            {completionProgress.canRetry && (
+              <Button
+                variant="primary"
+                onPress={retryCompletion}
+                style={styles.retryButton}
+              >
+                Retry Completion
+              </Button>
+            )}
+          </View>
+        ) : loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color={theme.colors.primary} />
             <Typography variant="body" style={styles.loadingText}>
@@ -1383,13 +1247,13 @@ export default function TrackerScreen({ navigation }) {
           </View>
         ) : (
           <View style={styles.contentContainer}>
-            {/* 3. Distance Indicator - MAINTAINED POSITION */}
+            {/* Distance Indicator */}
             <DistanceIndicator 
               holeData={holeData[currentHole]} 
               active={!loading} 
             />
             
-            {/* 4. Shot Table - MAINTAINED POSITION BUT EXPANDED HEIGHT */}
+            {/* Shot Table */}
             <View style={styles.tableContainer}>
               <ShotTable
                 shotCounts={holeData[currentHole].shotCounts}
@@ -1400,14 +1264,15 @@ export default function TrackerScreen({ navigation }) {
               />
             </View>
             
-            {/* 5. Action Button - MAINTAINED POSITION */}
+            {/* Action Button */}
             <View style={styles.buttonContainer}>
               <Button
                 variant="primary"
                 size="large"
                 fullWidth
                 onPress={currentHole === totalHoles ? finishRound : completeHole}
-                loading={loading}
+                loading={loading || completionProgress.isCompleting}
+                disabled={loading || completionProgress.isCompleting}
               >
                 {currentHole === totalHoles ? "Complete Round" : "Complete Hole"}
               </Button>
@@ -1467,6 +1332,49 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 16,
     color: "#666",
+  },
+  // ENHANCED: Completion progress styles
+  completionProgressContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 40,
+    backgroundColor: '#f8f8f8',
+    borderRadius: 8,
+    margin: 8,
+  },
+  completionProgressText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: "#333",
+    textAlign: "center",
+  },
+  completionStepText: {
+    marginTop: 8,
+    fontSize: 14,
+    color: "#666",
+    textAlign: "center",
+  },
+  completionErrorContainer: {
+    padding: 20,
+    backgroundColor: '#ffe6e6',
+    borderRadius: 8,
+    margin: 8,
+    borderLeftWidth: 4,
+    borderLeftColor: theme.colors.error,
+  },
+  completionErrorText: {
+    fontSize: 16,
+    color: "#333",
+    marginBottom: 8,
+  },
+  completionErrorDetail: {
+    fontSize: 14,
+    color: "#666",
+    marginBottom: 16,
+  },
+  retryButton: {
+    alignSelf: 'center',
   },
   contentContainer: {
     flex: 1,

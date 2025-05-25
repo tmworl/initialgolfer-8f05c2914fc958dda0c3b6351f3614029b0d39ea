@@ -1,4 +1,7 @@
 // src/context/AuthContext.js
+//
+// FOCUSED ENHANCEMENT: Only adds getAuthTelemetryContext() for round completion correlation
+// All other functionality remains identical to preserve existing behavior
 
 import React, { createContext, useState, useEffect, useCallback } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -96,6 +99,61 @@ export const AuthProvider = ({ children }) => {
       permission => permission.permission_id === productId && permission.active
     );
   }, [userPermissions]);
+
+  /**
+   * FOCUSED ADDITION: Get authentication telemetry context for round completion error correlation
+   * This provides structured auth data for PostHog to correlate completion failures with auth issues
+   * 
+   * @returns {Promise<Object>} Structured auth context for telemetry
+   */
+  const getAuthTelemetryContext = useCallback(async () => {
+    try {
+      // Get current session information
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error || !session?.access_token) {
+        return {
+          hasValidToken: false,
+          tokenAge: null,
+          sessionValid: false,
+          userId: user?.id || null,
+          permissions: userPermissions.map(p => p.permission_id)
+        };
+      }
+      
+      // Calculate token age if session exists
+      let tokenAge = null;
+      let sessionValid = false;
+      
+      if (session.expires_at) {
+        const expiryTime = new Date(session.expires_at).getTime();
+        const currentTime = Date.now();
+        const issuedTime = expiryTime - (60 * 60 * 1000); // Assume 1 hour validity
+        
+        tokenAge = Math.floor((currentTime - issuedTime) / 1000 / 60); // in minutes
+        sessionValid = currentTime < expiryTime;
+      }
+      
+      return {
+        hasValidToken: true,
+        tokenAge,
+        sessionValid,
+        emailVerified,
+        userId: user?.id || null,
+        permissions: userPermissions.map(p => p.permission_id),
+        hasProductA: hasPermission("product_a")
+      };
+    } catch (exception) {
+      console.error("Exception getting auth telemetry context:", exception);
+      return {
+        hasValidToken: false,
+        tokenAge: null,
+        sessionValid: false,
+        userId: user?.id || null,
+        permissions: []
+      };
+    }
+  }, [user, emailVerified, userPermissions, hasPermission]);
 
   // Handle deep links for email verification
   const handleDeepLink = async (event) => {
@@ -389,7 +447,9 @@ export const AuthProvider = ({ children }) => {
       pendingVerificationEmail,
       resendVerificationEmail,
       userPermissions,
-      hasPermission
+      hasPermission,
+      // FOCUSED ADDITION: Only export telemetry context function for round completion correlation
+      getAuthTelemetryContext
     }}>
       {children}
     </AuthContext.Provider>
